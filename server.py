@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import asyncio
+import json
 import logging
 import os
 import shutil
 import signal
 import sys
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import HTTPError, URLError
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -112,6 +117,50 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ASCILINE YouTube Streamer", lifespan=lifespan)
 app.add_middleware(AuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/api/search")
+async def api_search(q: str = ""):
+    """Search YouTube videos via the server-side YouTube Data API v3."""
+    query = q.strip()
+    if not query:
+        return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
+    if len(query) > 200:
+        return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
+    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
+    url = "https://www.googleapis.com/youtube/v3/search?" + params
+    def fetch_results():
+        request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
+        with urlopen(request, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
+    try:
+        data = await asyncio.to_thread(fetch_results)
+        results = []
+        for item in data.get("items", []):
+            video_id = item.get("id", {}).get("videoId")
+            snippet = item.get("snippet", {})
+            if not video_id:
+                continue
+            thumbs = snippet.get("thumbnails", {})
+            thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
+            results.append({"video_id":video_id, "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
+        return {"results":results}
+    except HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            api_message = details.get("error", {}).get("message", "")
+        except Exception:
+            api_message = ""
+        log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
+        if exc.code == 403:
+            return JSONResponse(status_code=502, content={"error":"YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
+        return JSONResponse(status_code=502, content={"error":"Fehler bei der YouTube-Suche."})
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        log.warning("YouTube search request failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error":"YouTube ist momentan nicht erreichbar."})
 
 
 @app.get("/")
