@@ -1,84 +1,38 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="utf-8">
   <title>ASCILINE</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080a0f">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=search1">
 </head>
 <body>
-
-  <!-- ── TOP BAR ─────────────────────────────────────────────────── -->
   <header id="topbar">
     <div id="brand">ASCILINE</div>
-    <input
-      id="query-input"
-      type="text"
-      autocomplete="off"
-      autocorrect="off"
-      autocapitalize="off"
-      spellcheck="false"
-      placeholder="Video ID, URL or search…"
-      aria-label="Video query"
-    >
-    <button id="btn-play" class="btn btn-primary" aria-label="Play">
-      <span class="btn-icon">▶</span>
-      <span class="btn-label">PLAY</span>
-    </button>
-    <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled>
-      <span class="btn-icon">■</span>
-      <span class="btn-label">STOP</span>
-    </button>
+    <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="YouTube-Video suchen …" aria-label="Video suchen">
+    <button id="btn-search" class="btn btn-secondary" type="button" aria-label="YouTube suchen"><span class="btn-icon">⌕</span><span class="btn-label">SUCHEN</span></button>
+    <button id="btn-play" class="btn btn-primary" aria-label="Play"><span class="btn-icon">▶</span><span class="btn-label">PLAY</span></button>
+    <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled><span class="btn-icon">■</span><span class="btn-label">STOP</span></button>
   </header>
-
-  <!-- ── SUB BAR ─────────────────────────────────────────────────── -->
   <div id="subbar">
-    <div id="preset-group" role="group" aria-label="Quality preset">
-      <span class="subbar-label">PRESET</span>
-      <button class="preset-btn active" data-preset="low">LOW</button>
-      <button class="preset-btn" data-preset="med">MED</button>
-      <button class="preset-btn" data-preset="high">HIGH</button>
-    </div>
-    <div id="preset-hint" class="subbar-hint hidden">
-      Preset change takes effect on next Play
-    </div>
-    <div id="volume-group">
-      <span class="subbar-label">VOL</span>
-      <button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button>
-      <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1"
-             aria-label="Volume">
-    </div>
+    <div id="preset-group" role="group" aria-label="Quality preset"><span class="subbar-label">PRESET</span><button class="preset-btn active" data-preset="low">LOW</button><button class="preset-btn" data-preset="med">MED</button><button class="preset-btn" data-preset="high">HIGH</button></div>
+    <div id="preset-hint" class="subbar-hint hidden">Preset change takes effect on next Play</div>
+    <div id="volume-group"><span class="subbar-label">VOL</span><button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button><input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
   </div>
-
-  <!-- ── CANVAS PLAYER ───────────────────────────────────────────── -->
+  <section id="search-panel" class="hidden" aria-label="YouTube-Suchergebnisse">
+    <div class="search-panel-top"><div id="search-heading">YOUTUBE-SUCHERGEBNISSE</div><button id="btn-close-search" class="icon-btn" type="button" aria-label="Suchergebnisse schließen">✕</button></div>
+    <div id="search-message" role="status" aria-live="polite"></div><div id="search-results"></div>
+  </section>
   <main id="player-container">
-    <pre id="ascii-player"></pre>
-    <canvas id="ascii-canvas"></canvas>
-
-    <div id="idle-overlay">
-      <div id="idle-content">
-        <div id="idle-logo">ASCILINE</div>
-        <div id="idle-sub">ASCII video streaming</div>
-        <div id="idle-arrow">↑ type a video above and hit PLAY</div>
-      </div>
-    </div>
+    <pre id="ascii-player"></pre><canvas id="ascii-canvas"></canvas>
+    <div id="idle-overlay"><div id="idle-content"><div id="idle-logo">ASCILINE</div><div id="idle-sub">ASCII video streaming</div><div id="idle-arrow">↑ Suche ein Video oder gib eine Video-ID ein</div></div></div>
   </main>
-
-  <!-- ── STATUS BAR ──────────────────────────────────────────────── -->
-  <footer id="statusbar">
-    <span id="status-title" class="status-segment"></span>
-    <span id="status-live" class="live-badge hidden">● LIVE</span>
-    <span id="status-state" class="status-segment status-state">IDLE</span>
-    <span id="status-fps" class="status-segment status-fps"></span>
-    <span id="status-perf-hint" class="status-segment status-perf hidden">↓ try a lower preset</span>
-  </footer>
-
-  <!-- hidden audio element; no src until Play -->
+  <footer id="statusbar"><span id="status-title" class="status-segment"></span><span id="status-live" class="live-badge hidden">● LIVE</span><span id="status-state" class="status-segment status-state">IDLE</span><span id="status-fps" class="status-segment status-fps"></span><span id="status-perf-hint" class="status-segment status-perf hidden">↓ try a lower preset</span></footer>
   <audio id="ascii-audio" preload="auto"></audio>
-
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=search1"></script>
 </body>
 </html>
