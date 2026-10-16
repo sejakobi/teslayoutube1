@@ -1,13 +1,12 @@
+
 """Map user input (video ID / YouTube URL / search query) to media URLs.
 
 Resolution order:
-  1. YouTube URL (youtube.com / youtu.be) → use directly.
-  2. Bare 11-char video ID → https://www.youtube.com/watch?v=<id>.  If
-     yt-dlp reports "video unavailable", fall back to search.
-  3. Anything else → prefix with `ytsearch1:` and let yt-dlp pick the
-     first hit.
+  1. YouTube URL -> resolve directly.
+  2. Bare 11-character video ID -> resolve the video.
+  3. Anything else -> search YouTube for the first matching result.
 
-Returns a ResolvedMedia.  Raises ResolverError on failure.
+Returns a ResolvedMedia. Raises ResolverError on failure.
 """
 
 from __future__ import annotations
@@ -18,31 +17,33 @@ from typing import Optional
 
 import yt_dlp
 
+
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
 _YOUTUBE_URL_RE = re.compile(
-    r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.IGNORECASE
+    r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/",
+    re.IGNORECASE,
 )
 
 
 class ResolverError(Exception):
-    pass
+    """Raised when a video cannot be resolved."""
 
 
 @dataclass
 class ResolvedMedia:
     title: str
     is_live: bool
-    duration: Optional[float]        # seconds; None for live
-    video_url: str                   # direct stream URL for ffmpeg
-    audio_url: Optional[str]         # separate audio URL, or None if muxed
+    duration: Optional[float]
+    video_url: str
+    audio_url: Optional[str]
     video_id: str
     format_note: str
 
 
 def _ydl_opts(max_height: int) -> dict:
-    # For live streams yt-dlp picks the HLS manifest automatically when
-    # the format filter matches.  Prefer split video+audio so the two
-    # pipelines can be independent; accept muxed as fallback.
+    """Build yt-dlp options."""
+
     fmt = (
         f"bestvideo[height<={max_height}][ext=mp4]"
         f"+bestaudio[ext=m4a]"
@@ -50,108 +51,214 @@ def _ydl_opts(max_height: int) -> dict:
         f"/best[height<={max_height}]"
         f"/best"
     )
+
     return {
         "format": fmt,
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
+
+        # Try alternative YouTube player clients.
+        # This may help with some extraction failures,
+        # but cannot guarantee access from a blocked server IP.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv", "web_safari"],
+            }
+        },
+
+        "noplaylist": True,
+        "socket_timeout": 20,
+        "retries": 2,
     }
 
 
 def _extract(url: str, max_height: int) -> dict:
+    """Extract video metadata and stream URLs."""
+
     opts = _ydl_opts(max_height)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try:
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        except yt_dlp.utils.DownloadError as exc:
-            raise ResolverError(str(exc)) from exc
+
+    except yt_dlp.utils.DownloadError as exc:
+        raise ResolverError(str(exc)) from exc
+
+    except Exception as exc:
+        raise ResolverError(
+            f"Unexpected error while resolving video: {exc}"
+        ) from exc
+
     if info is None:
         raise ResolverError(f"yt-dlp returned no info for: {url}")
-    # ytsearch1: wraps the result in an "entries" list.
+
+    # Search results are returned inside an entries list.
     if "entries" in info:
-        entries = list(info["entries"])
+        entries = [
+            entry for entry in info["entries"]
+            if entry is not None
+        ]
+
         if not entries:
             raise ResolverError(f"No results for query: {url}")
+
         info = entries[0]
-        if info.get("url") is None and info.get("webpage_url"):
-            with yt_dlp.YoutubeDL(opts) as ydl2:
+
+        # Resolve the actual video if the search result
+        # only contains metadata.
+        if not info.get("url") or not info.get("formats"):
+            webpage_url = info.get("webpage_url")
+
+            if webpage_url:
                 try:
-                    info = ydl2.extract_info(info["webpage_url"], download=False)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(
+                            webpage_url,
+                            download=False,
+                        )
                 except yt_dlp.utils.DownloadError as exc:
                     raise ResolverError(str(exc)) from exc
+
+    if not isinstance(info, dict):
+        raise ResolverError("yt-dlp returned invalid video information.")
+
     return info
 
 
 def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
-    """(video_url, audio_url).  audio_url is None when video_url is muxed."""
+    """Return (video_url, audio_url).
+
+    audio_url is None when the video stream also contains audio.
+    """
+
     requested = info.get("requested_formats")
+
     if requested and len(requested) >= 2:
         video_fmt = next(
-            (f for f in requested if f.get("vcodec") not in (None, "none")), None
-        )
-        audio_fmt = next(
-            (f for f in requested
-             if f.get("acodec") not in (None, "none")
-             and f.get("vcodec") in (None, "none")),
+            (
+                item for item in requested
+                if item.get("vcodec") not in (None, "none")
+            ),
             None,
         )
+
+        audio_fmt = next(
+            (
+                item for item in requested
+                if item.get("acodec") not in (None, "none")
+                and item.get("vcodec") in (None, "none")
+            ),
+            None,
+        )
+
         if video_fmt and audio_fmt:
-            return video_fmt["url"], audio_fmt["url"]
-        if video_fmt:
+            video_url = video_fmt.get("url")
+            audio_url = audio_fmt.get("url")
+
+            if video_url and audio_url:
+                return video_url, audio_url
+
+        if video_fmt and video_fmt.get("url"):
             return video_fmt["url"], None
 
     url = info.get("url")
+
     if not url:
-        raise ResolverError("yt-dlp returned no playable URL")
+        raise ResolverError(
+            "yt-dlp returned no playable URL. "
+            "The video may be unavailable or YouTube may have "
+            "blocked stream extraction."
+        )
+
     return url, None
 
 
 def _build_format_note(info: dict) -> str:
+    """Build a readable description of the selected format."""
+
     requested = info.get("requested_formats")
+
     if requested:
         parts = []
-        for f in requested:
-            h = f.get("height")
-            codec = f.get("vcodec") or f.get("acodec") or "?"
-            note = f.get("format_note") or ""
-            parts.append(f"{codec} {h}p {note}".strip() if h else f"{codec} {note}".strip())
+
+        for item in requested:
+            height = item.get("height")
+            codec = (
+                item.get("vcodec")
+                or item.get("acodec")
+                or "?"
+            )
+            note = item.get("format_note") or ""
+
+            if height:
+                parts.append(
+                    f"{codec} {height}p {note}".strip()
+                )
+            else:
+                parts.append(
+                    f"{codec} {note}".strip()
+                )
+
         return " + ".join(parts)
+
     return (
         f"{info.get('format_note', '')} "
         f"{info.get('height', '')}p "
-        f"{info.get('ext', '')}".strip()
-    )
+        f"{info.get('ext', '')}"
+    ).strip()
 
 
 def _is_unavailable(err: ResolverError) -> bool:
+    """Check whether a video-ID failure may justify a search fallback."""
+
     msg = str(err).lower()
+
     return any(
-        kw in msg
-        for kw in ("video unavailable", "this video is not available", "private video",
-                   "has been removed", "not available in your country")
+        keyword in msg
+        for keyword in (
+            "video unavailable",
+            "this video is not available",
+            "private video",
+            "has been removed",
+            "not available in your country",
+        )
     )
 
 
-def resolve(query: str, max_height: int = 720) -> ResolvedMedia:
-    """Resolve user input to a ResolvedMedia.  Raises ResolverError."""
+def resolve(
+    query: str,
+    max_height: int = 720,
+) -> ResolvedMedia:
+    """Resolve a YouTube ID, URL, or search query."""
+
     query = query.strip()
+
+    if not query:
+        raise ResolverError("Please enter a YouTube URL or search query.")
 
     if _YOUTUBE_URL_RE.match(query):
         yt_url = query
         is_id_attempt = False
-    elif _VIDEO_ID_RE.match(query):
+
+    elif _VIDEO_ID_RE.fullmatch(query):
         yt_url = f"https://www.youtube.com/watch?v={query}"
         is_id_attempt = True
+
     else:
         yt_url = f"ytsearch1:{query}"
         is_id_attempt = False
 
     try:
         info = _extract(yt_url, max_height)
+
     except ResolverError as exc:
-        # ID-failure → retry as search.
+        # If an ID is unavailable, try searching for it.
         if is_id_attempt and _is_unavailable(exc):
-            info = _extract(f"ytsearch1:{query}", max_height)
+            info = _extract(
+                f"ytsearch1:{query}",
+                max_height,
+            )
         else:
             raise
 
@@ -168,36 +275,48 @@ def resolve(query: str, max_height: int = 720) -> ResolvedMedia:
     )
 
 
-# CLI test entry:  python -m resolver "<input>"
 if __name__ == "__main__":
-    import sys
     import json
+    import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m resolver \"<video ID | URL | search query>\"")
+        print(
+            'Usage: python -m resolver '
+            '"<video ID | URL | search query>"'
+        )
         sys.exit(1)
 
     user_input = " ".join(sys.argv[1:])
+
     print(f"Resolving: {user_input!r}")
 
     try:
         result = resolve(user_input)
-    except ResolverError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+
+    except ResolverError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(json.dumps(
-        {
-            "title": result.title,
-            "video_id": result.video_id,
-            "is_live": result.is_live,
-            "duration": result.duration,
-            "format_note": result.format_note,
-            "video_url": result.video_url[:80] + "…" if len(result.video_url) > 80 else result.video_url,
-            "audio_url": (
-                (result.audio_url[:80] + "…" if len(result.audio_url) > 80 else result.audio_url)
-                if result.audio_url else None
-            ),
-        },
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {
+                "title": result.title,
+                "video_id": result.video_id,
+                "is_live": result.is_live,
+                "duration": result.duration,
+                "format_note": result.format_note,
+                "video_url": (
+                    result.video_url[:80] + "…"
+                    if len(result.video_url) > 80
+                    else result.video_url
+                ),
+                "audio_url": (
+                    result.audio_url[:80] + "…"
+                    if result.audio_url
+                    and len(result.audio_url) > 80
+                    else result.audio_url
+                ),
+            },
+            indent=2,
+        )
+    )
