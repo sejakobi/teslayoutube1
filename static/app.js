@@ -9,6 +9,11 @@
 
 const queryInput      = document.getElementById('query-input');
 const btnPlay         = document.getElementById('btn-play');
+const btnSearch       = document.getElementById('btn-search');
+const btnCloseSearch  = document.getElementById('btn-close-search');
+const searchPanel     = document.getElementById('search-panel');
+const searchResults   = document.getElementById('search-results');
+const searchMessage   = document.getElementById('search-message');
 const btnStop         = document.getElementById('btn-stop');
 const presetBtns      = document.querySelectorAll('.preset-btn');
 const presetHint      = document.getElementById('preset-hint');
@@ -517,10 +522,53 @@ const flushSelectionLayer = () => {
 asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
 document.addEventListener('copy', flushSelectionLayer);
 
+// ───────── YouTube Data API search ─────────
+let searchRequestId = 0;
+
+async function doSearch() {
+    const query = queryInput.value.trim();
+    if (!query) { queryInput.focus(); return; }
+    const requestId = ++searchRequestId;
+    searchPanel.classList.remove('hidden');
+    searchResults.replaceChildren();
+    searchMessage.textContent = 'Suche läuft …';
+    btnSearch.disabled = true;
+    try {
+        const response = await fetch('/api/search?q=' + encodeURIComponent(query));
+        const data = await response.json();
+        if (requestId !== searchRequestId) return;
+        if (!response.ok) {
+            if (response.status === 403) throw new Error('Bitte zuerst mit deiner PIN anmelden und erneut suchen.');
+            throw new Error(data.error || `Suche fehlgeschlagen (${response.status}).`);
+        }
+        const results = data.results || [];
+        if (!results.length) { searchMessage.textContent = 'Keine Videos gefunden.'; return; }
+        searchMessage.textContent = `${results.length} Ergebnisse – wähle ein Video aus`;
+        for (const video of results) {
+            const card = document.createElement('button');
+            card.type = 'button'; card.className = 'search-result';
+            card.setAttribute('aria-label', `Abspielen: ${video.title}`);
+            const image = document.createElement('img');
+            image.className = 'search-thumbnail'; image.alt = ''; image.loading = 'lazy';
+            image.src = video.thumbnail || ''; image.hidden = !video.thumbnail;
+            const details = document.createElement('span'); details.className = 'search-details';
+            const title = document.createElement('span'); title.className = 'search-title'; title.textContent = video.title;
+            const channel = document.createElement('span'); channel.className = 'search-channel'; channel.textContent = video.channel || 'Unbekannter Kanal';
+            details.append(title, channel); card.append(image, details);
+            card.addEventListener('click', () => { queryInput.value = video.video_id; searchPanel.classList.add('hidden'); doPlay(); });
+            searchResults.append(card);
+        }
+    } catch (error) {
+        if (requestId === searchRequestId) searchMessage.textContent = error.message || 'Die Suche ist fehlgeschlagen.';
+    } finally { if (requestId === searchRequestId) btnSearch.disabled = false; }
+}
+
 // ───────── Wiring ─────────
 btnPlay.addEventListener('click', doPlay);
+btnSearch.addEventListener('click', doSearch);
+if (btnCloseSearch) btnCloseSearch.addEventListener('click', () => searchPanel.classList.add('hidden'));
 btnStop.addEventListener('click', doStop);
-queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doPlay(); });
+queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
 window.addEventListener('resize', () => {
     if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
