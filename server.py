@@ -191,7 +191,7 @@ async def audio_stream(request: Request):
     )
 
 
-def _native_mp4_command(session: Session) -> list[str]:
+def _native_mp4_command(session: Session, start_seconds: float = 0.0) -> list[str]:
     """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
 
     No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
@@ -202,16 +202,24 @@ def _native_mp4_command(session: Session) -> list[str]:
     if media is None:
         raise ValueError("media is not ready")
 
+    # Seeking restarts this one-shot stream at a new input position.  The
+    # browser stream itself is intentionally non-range/streaming; the progress
+    # slider requests a fresh FFmpeg process at the chosen media timestamp.
+    start_seconds = max(0.0, float(start_seconds or 0.0))
+    video_seek_args = ["-ss", f"{start_seconds:.3f}"] if start_seconds > 0 else []
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
         *_ffmpeg_input_header_args(media.video_headers),
+        *video_seek_args,
         "-i", media.video_url,
     ]
     if media.audio_url:
+        audio_seek_args = ["-ss", f"{start_seconds:.3f}"] if start_seconds > 0 else []
         cmd.extend([
             "-thread_queue_size", "512",
             *_ffmpeg_input_header_args(media.audio_headers),
+            *audio_seek_args,
             "-i", media.audio_url,
             "-map", "0:v:0", "-map", "1:a:0",
         ])
@@ -295,14 +303,23 @@ async def native_canvas_media(request: Request):
     session_id = request.query_params.get("session")
     if not session_id:
         return Response(status_code=400, content="missing session id")
+    try:
+        start_seconds = max(0.0, float(request.query_params.get("start", "0")))
+    except (TypeError, ValueError):
+        return Response(status_code=400, content="invalid start time")
     session = get_manager().get(session_id)
     if session is None or session.media is None:
         return Response(status_code=404, content="unknown or stale session id")
     if session.display_mode != "canvas":
         return Response(status_code=409, content="native media is only available in Canvas mode")
 
+    if session.media.is_live:
+        start_seconds = 0.0
+    elif session.media.duration and session.media.duration > 0:
+        start_seconds = min(start_seconds, max(0.0, float(session.media.duration) - 0.5))
+
     try:
-        command = _native_mp4_command(session)
+        command = _native_mp4_command(session, start_seconds)
         proc = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -399,6 +416,7 @@ async def api_play(req: PlayRequest):
             "display_mode": session.display_mode,
             "canvas_width": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["width"],
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
+            "duration": session.media.duration,
         }
 
     # Superseded during resolve (rare race — another Play beat us).
