@@ -36,7 +36,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
 
 import auth
-from config import PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
+from config import PRESETS, CANVAS_PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
 from pipeline import PresetSpec
 from resolver import ResolverError
 from session import (
@@ -231,14 +231,16 @@ async def api_auth(req: AuthRequest, request: Request):
 class PlayRequest(BaseModel):
     query: str
     preset: str = DEFAULT_PRESET
+    display_mode: str = "ascii"
 
 
 @app.post("/api/play")
 async def api_play(req: PlayRequest):
     preset_name = req.preset if req.preset in PRESETS else DEFAULT_PRESET
+    display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "ascii"
     mgr = get_manager()
     try:
-        session = await mgr.play(req.query, preset_name)
+        session = await mgr.play(req.query, preset_name, display_mode)
     except ResolverError as exc:
         return JSONResponse(
             status_code=422,
@@ -255,6 +257,7 @@ async def api_play(req: PlayRequest):
             "rows": preset_cfg["rows"],
             "fps": preset_cfg["fps_cap"],
             "mode": preset_cfg["mode"],
+            "display_mode": session.display_mode,
         }
 
     # Superseded during resolve (rare race — another Play beat us).
@@ -276,7 +279,7 @@ async def api_status():
 
 
 async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
-    """Stream ASCII frames for an already-playing session."""
+    """Stream ASCII-protocol or JPEG Canvas frames for an already-playing session."""
     preset_name = session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET
     preset_cfg = PRESETS[preset_name]
     preset = PresetSpec(
