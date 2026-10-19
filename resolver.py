@@ -1,17 +1,13 @@
 
-"""Map user input (video ID / YouTube URL / search query) to media URLs.
-
-Resolution order:
-  1. YouTube URL -> resolve directly.
-  2. Bare 11-character video ID -> resolve the video.
-  3. Anything else -> search YouTube for the first matching result.
-
-Returns a ResolvedMedia. Raises ResolverError on failure.
-"""
+"""Resolve a YouTube URL, video ID, or search query to stream URLs."""
 
 from __future__ import annotations
 
+import base64
+import binascii
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,16 +53,11 @@ def _ydl_opts(max_height: int) -> dict:
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
-
-        # Try alternative YouTube player clients.
-        # This may help with some extraction failures,
-        # but cannot guarantee access from a blocked server IP.
         "extractor_args": {
             "youtube": {
                 "player_client": ["tv", "web_safari"],
             }
         },
-
         "noplaylist": True,
         "socket_timeout": 20,
         "retries": 2,
@@ -74,13 +65,87 @@ def _ydl_opts(max_height: int) -> dict:
 
 
 def _extract(url: str, max_height: int) -> dict:
-    """Extract video metadata and stream URLs."""
+    """Extract video information, optionally using session cookies."""
 
     opts = _ydl_opts(max_height)
+    cookie_path = None
 
     try:
+        encoded = os.environ.get("YOUTUBE_COOKIES_B64", "").strip()
+
+        if encoded:
+            try:
+                cookie_bytes = base64.b64decode(
+                    encoded,
+                    validate=True,
+                )
+            except (binascii.Error, ValueError) as exc:
+                raise ResolverError(
+                    "YOUTUBE_COOKIES_B64 is invalid Base64. "
+                    "Please encode cookies.txt again."
+                ) from exc
+
+            if not cookie_bytes:
+                raise ResolverError(
+                    "The decoded YouTube cookie file is empty."
+                )
+
+            # Create a temporary cookie file. Never log its contents.
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix="yt-cookies-",
+                suffix=".txt",
+                delete=False,
+            ) as cookie_file:
+                cookie_file.write(cookie_bytes)
+                cookie_path = cookie_file.name
+
+            opts["cookiefile"] = cookie_path
+
+        # Keep the temporary file available for all extraction calls.
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
+        if info is None:
+            raise ResolverError(
+                f"yt-dlp returned no information for: {url}"
+            )
+
+        # Search results are returned inside an entries list.
+        if "entries" in info:
+            entries = [
+                entry for entry in info["entries"]
+                if entry is not None
+            ]
+
+            if not entries:
+                raise ResolverError(
+                    f"No results found for query: {url}"
+                )
+
+            info = entries[0]
+
+            # Resolve the actual video if the search result contains
+            # metadata only.
+            if not info.get("url") or not info.get("formats"):
+                webpage_url = info.get("webpage_url")
+
+                if webpage_url:
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(
+                            webpage_url,
+                            download=False,
+                        )
+
+        if not isinstance(info, dict):
+            raise ResolverError(
+                "yt-dlp returned invalid video information."
+            )
+
+        return info
+
+    except ResolverError:
+        raise
 
     except yt_dlp.utils.DownloadError as exc:
         raise ResolverError(str(exc)) from exc
@@ -90,47 +155,17 @@ def _extract(url: str, max_height: int) -> dict:
             f"Unexpected error while resolving video: {exc}"
         ) from exc
 
-    if info is None:
-        raise ResolverError(f"yt-dlp returned no info for: {url}")
-
-    # Search results are returned inside an entries list.
-    if "entries" in info:
-        entries = [
-            entry for entry in info["entries"]
-            if entry is not None
-        ]
-
-        if not entries:
-            raise ResolverError(f"No results for query: {url}")
-
-        info = entries[0]
-
-        # Resolve the actual video if the search result
-        # only contains metadata.
-        if not info.get("url") or not info.get("formats"):
-            webpage_url = info.get("webpage_url")
-
-            if webpage_url:
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(
-                            webpage_url,
-                            download=False,
-                        )
-                except yt_dlp.utils.DownloadError as exc:
-                    raise ResolverError(str(exc)) from exc
-
-    if not isinstance(info, dict):
-        raise ResolverError("yt-dlp returned invalid video information.")
-
-    return info
+    finally:
+        # Delete temporary cookies even if extraction fails.
+        if cookie_path:
+            try:
+                os.remove(cookie_path)
+            except OSError:
+                pass
 
 
 def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
-    """Return (video_url, audio_url).
-
-    audio_url is None when the video stream also contains audio.
-    """
+    """Return the video URL and an optional separate audio URL."""
 
     requested = info.get("requested_formats")
 
@@ -166,9 +201,8 @@ def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
 
     if not url:
         raise ResolverError(
-            "yt-dlp returned no playable URL. "
-            "The video may be unavailable or YouTube may have "
-            "blocked stream extraction."
+            "yt-dlp returned no playable URL. The video may be unavailable "
+            "or YouTube may have blocked stream extraction."
         )
 
     return url, None
@@ -235,7 +269,9 @@ def resolve(
     query = query.strip()
 
     if not query:
-        raise ResolverError("Please enter a YouTube URL or search query.")
+        raise ResolverError(
+            "Please enter a YouTube URL or search query."
+        )
 
     if _YOUTUBE_URL_RE.match(query):
         yt_url = query
@@ -253,7 +289,6 @@ def resolve(
         info = _extract(yt_url, max_height)
 
     except ResolverError as exc:
-        # If an ID is unavailable, try searching for it.
         if is_id_attempt and _is_unavailable(exc):
             info = _extract(
                 f"ytsearch1:{query}",
@@ -287,7 +322,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     user_input = " ".join(sys.argv[1:])
-
     print(f"Resolving: {user_input!r}")
 
     try:
