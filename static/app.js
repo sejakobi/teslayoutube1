@@ -16,6 +16,7 @@ const searchResults   = document.getElementById('search-results');
 const searchMessage   = document.getElementById('search-message');
 const btnStop         = document.getElementById('btn-stop');
 const presetBtns      = document.querySelectorAll('.preset-btn');
+const displayModeBtns = document.querySelectorAll('.display-mode-btn');
 const presetHint      = document.getElementById('preset-hint');
 const btnMute         = document.getElementById('btn-mute');
 const volumeSlider    = document.getElementById('volume-slider');
@@ -38,6 +39,9 @@ let sessionId      = null;
 let pollTimer      = null;
 let currentPreset  = 'low';
 let selectedPreset = 'low';
+let selectedDisplayMode = 'canvas';
+let canvasVideoMode = false;
+let lastCanvasFrameIndex = -1;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -82,9 +86,26 @@ presetBtns.forEach(btn => {
         if (p === selectedPreset) return;
         selectedPreset = p;
         presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === p));
-        if (appState === 'playing') presetHint.classList.remove('hidden');
+        updateConfigHint();
     });
 });
+
+displayModeBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        const mode = btn.dataset.displayMode;
+        if (mode !== 'ascii' && mode !== 'canvas') return;
+        selectedDisplayMode = mode;
+        displayModeBtns.forEach(b => b.classList.toggle('active', b.dataset.displayMode === mode));
+        updateConfigHint();
+    });
+});
+
+function updateConfigHint() {
+    if (appState === 'playing' || appState === 'resolving') {
+        presetHint.textContent = 'Änderungen werden beim nächsten PLAY übernommen';
+        presetHint.classList.remove('hidden');
+    }
+}
 
 // ───────── Volume / mute ─────────
 let isMuted = false;
@@ -172,6 +193,44 @@ function buildCanvas(cols, rows) {
     for (let r = 0; r < rows; r++) yPos[r] = r * charHeight;
 }
 
+function buildVideoCanvas(width, height) {
+    canvasVideoMode = true;
+    pixelMode = false;
+    gridCols = 0;
+    gridRows = 0;
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.display = 'block';
+    canvas.style.imageRendering = 'auto';
+    canvas.style.position = 'absolute';
+    canvas.style.objectFit = 'contain';
+    asciiPlayer.style.display = 'none';
+    asciiPlayer.textContent = '';
+    layoutVideoCanvas();
+}
+
+function layoutVideoCanvas() {
+    if (!canvasVideoMode || !canvas.width || !canvas.height) return;
+    const cw = playerContainer.clientWidth;
+    const ch = playerContainer.clientHeight;
+    const scale = Math.min(cw / canvas.width, ch / canvas.height);
+    const w = Math.max(1, Math.floor(canvas.width * scale));
+    const h = Math.max(1, Math.floor(canvas.height * scale));
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    canvas.style.left = `${Math.floor((cw - w) / 2)}px`;
+    canvas.style.top = `${Math.floor((ch - h) / 2)}px`;
+}
+
+function clearFrameBuffer() {
+    for (const item of frameBuffer) {
+        if (item && item.data && typeof ImageBitmap !== 'undefined' && item.data instanceof ImageBitmap) {
+            item.data.close();
+        }
+    }
+    frameBuffer.length = 0;
+}
+
 // ───────── Render loop ─────────
 function renderFrame(now) {
     if (appState !== 'playing' || !readyToRender) return;
@@ -188,7 +247,8 @@ function renderFrame(now) {
     // Drop frames that fell visibly behind (>100 ms) so a tab that was
     // backgrounded for a moment doesn't replay a backlog on resume.
     while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
-        frameBuffer.shift();
+        const stale = frameBuffer.shift();
+        if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
     }
     if (frameBuffer[0].time > masterClock + 0.05) return;
 
@@ -220,6 +280,15 @@ function renderFrame(now) {
         statusPerf.classList.toggle('hidden', !fpsBelowThreshold);
         fpsWindowFrames = 0;
         fpsWindowStart  = now;
+    }
+
+    if (canvasVideoMode) {
+        if (frame && typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
+            lastCanvasFrameIndex = Math.max(lastCanvasFrameIndex, frameObj.index ?? -1);
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            frame.close();
+        }
+        return;
     }
 
     if (renderMode === 1) {
@@ -271,9 +340,29 @@ function renderFrame(now) {
     asciiPlayer.style.color   = 'transparent';
 }
 
+function startRenderingAndAudio(sid) {
+    if (audioEl) {
+        audioEl.pause();
+        audioEl.src = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
+        audioEl.muted = isMuted;
+        audioEl.volume = parseFloat(volumeSlider.value);
+        audioEl.load();
+        audioEl.play().catch((err) => {
+            statusPerf.textContent = `audio: ${err && err.name || 'error'}`;
+            statusPerf.classList.remove('hidden');
+        });
+    }
+    readyToRender = true;
+    lastFpsUpdate = performance.now();
+    fpsWindowStart = lastFpsUpdate;
+    requestAnimationFrame(renderFrame);
+}
+
 // ───────── WebSocket ─────────
 function connectWs(sid) {
-    frameBuffer.length = 0;
+    clearFrameBuffer();
+    canvasVideoMode = false;
+    lastCanvasFrameIndex = -1;
     frameCount         = 0;
     measuredFps        = 0;
     fpsWindowFrames    = 0;
@@ -297,36 +386,33 @@ function connectWs(sid) {
                 closeWs();
                 return;
             }
-            if (event.data.startsWith('INIT:')) {
+            if (event.data.startsWith('CANVAS_INIT:')) {
+                wsRetryCount = 0;
+                const p = event.data.split(':');
+                targetFps = parseFloat(p[1]);
+                const width = parseInt(p[2], 10);
+                const height = parseInt(p[3], 10);
+                renderMode = 0;
+                pixelMode = false;
+                buildVideoCanvas(width, height);
+
+                setStatus('PLAYING · CANVAS', 'playing');
+                idleOverlay.classList.add('hidden');
+                startRenderingAndAudio(sid);
+                return;
+            } else if (event.data.startsWith('INIT:')) {
                 wsRetryCount = 0;
                 const p = event.data.split(':');
                 targetFps  = parseFloat(p[1]);
                 renderMode = parseInt(p[2]);
                 pixelMode  = (p.length > 5 && parseInt(p[5]) === 1);
+                canvasVideoMode = false;
                 buildCanvas(parseInt(p[3]), parseInt(p[4]));
 
-                setStatus('PLAYING', 'playing');
+                setStatus('PLAYING · ASCII', 'playing');
                 idleOverlay.classList.add('hidden');
 
-                if (audioEl) {
-                    audioEl.pause();
-                    audioEl.src    = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
-                    audioEl.muted  = isMuted;
-                    audioEl.volume = parseFloat(volumeSlider.value);
-                    audioEl.load();
-                    audioEl.play().catch((err) => {
-                        // Surface failures rather than swallow them — a
-                        // Secure-cookie-on-http misconfig used to 403 /audio
-                        // silently.
-                        statusPerf.textContent = `audio: ${err && err.name || 'error'}`;
-                        statusPerf.classList.remove('hidden');
-                    });
-                }
-
-                readyToRender  = true;
-                lastFpsUpdate  = performance.now();
-                fpsWindowStart = lastFpsUpdate;
-                requestAnimationFrame(renderFrame);
+                startRenderingAndAudio(sid);
                 return;
             }
             // Mode-1 text frame: "<idx>\n<frame text>".
@@ -336,9 +422,31 @@ function connectWs(sid) {
         } else {
             const view = new DataView(event.data);
             const idx  = view.getUint32(0, false);
+            if (canvasVideoMode) {
+                if (idx <= lastCanvasFrameIndex) return;
+                const jpeg = event.data.slice(4);
+                createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then(bitmap => {
+                    if (appState !== 'playing' || !canvasVideoMode || idx <= lastCanvasFrameIndex) {
+                        bitmap.close();
+                        return;
+                    }
+                    frameBuffer.push({ data: bitmap, time: idx / targetFps, index: idx });
+                    frameBuffer.sort((a, b) => a.index - b.index);
+                    while (frameBuffer.length > FRAME_BUFFER_MAX) {
+                        const dropped = frameBuffer.shift();
+                        if (dropped && dropped.data instanceof ImageBitmap) dropped.data.close();
+                    }
+                }).catch(err => {
+                    console.warn('Canvas frame decode failed:', err);
+                });
+                return;
+            }
             frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
         }
-        while (frameBuffer.length > FRAME_BUFFER_MAX) frameBuffer.shift();
+        while (frameBuffer.length > FRAME_BUFFER_MAX) {
+            const dropped = frameBuffer.shift();
+            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
+        }
     };
 
     ws.onclose = (evt) => {
@@ -395,7 +503,7 @@ async function doPlay() {
         resp = await fetch('/api/play', {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ query, preset: currentPreset }),
+            body:    JSON.stringify({ query, preset: currentPreset, display_mode: selectedDisplayMode }),
         });
         data = await resp.json();
     } catch (err) {
@@ -485,7 +593,7 @@ function updateTitle(title, isLive) {
 function finishPlayback() {
     appState           = 'idle';
     readyToRender      = false;
-    frameBuffer.length = 0;
+    clearFrameBuffer();
     if (audioEl) { audioEl.pause(); audioEl.src = ''; }
     clearCanvas();
     idleOverlay.classList.remove('hidden');
@@ -496,6 +604,7 @@ function finishPlayback() {
 }
 
 function clearCanvas() {
+    canvasVideoMode = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     canvas.style.display      = 'none';
     asciiPlayer.textContent   = '';
@@ -571,5 +680,6 @@ btnStop.addEventListener('click', doStop);
 queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
 window.addEventListener('resize', () => {
-    if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
+    if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
+    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
 });
