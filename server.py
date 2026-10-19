@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
@@ -37,7 +38,7 @@ from starlette.websockets import WebSocketState
 
 import auth
 from config import PRESETS, CANVAS_PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
-from pipeline import PresetSpec
+from pipeline import PresetSpec, _ffmpeg_input_header_args
 from resolver import ResolverError
 from session import (
     Session, State,
@@ -83,7 +84,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/"):
             return JSONResponse(status_code=403, content={"error": "unauthorized"})
 
-        if path == "/audio":
+        if path in {"/audio", "/media"}:
             return Response(status_code=403, content="Unauthorized")
 
         with open(PIN_PAGE, "rb") as f:
@@ -190,6 +191,144 @@ async def audio_stream(request: Request):
     )
 
 
+def _native_mp4_command(session: Session) -> list[str]:
+    """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
+
+    No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
+    fragmented MP4 so the browser can decode them natively while JavaScript
+    draws each decoded frame to the visible Canvas.
+    """
+    media = session.media
+    if media is None:
+        raise ValueError("media is not ready")
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
+        "-thread_queue_size", "512",
+        *_ffmpeg_input_header_args(media.video_headers),
+        "-i", media.video_url,
+    ]
+    if media.audio_url:
+        cmd.extend([
+            "-thread_queue_size", "512",
+            *_ffmpeg_input_header_args(media.audio_headers),
+            "-i", media.audio_url,
+            "-map", "0:v:0", "-map", "1:a:0",
+        ])
+    else:
+        # Optional audio map means a progressive video-only format still works,
+        # while muxed MP4 sources keep their original audio track.
+        cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+
+    cmd.extend([
+        "-c:v", "copy", "-c:a", "copy",
+        "-sn", "-dn",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        "-flush_packets", "1",
+        "-f", "mp4", "pipe:1",
+    ])
+    return cmd
+
+
+async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:
+    """Drain stderr so FFmpeg cannot block; never log signed stream URLs."""
+    if proc.stderr is None:
+        return
+    try:
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            message = line.decode("utf-8", errors="replace").strip()
+            if message:
+                log.warning("native Canvas ffmpeg session=%s: %s", sid, message[:600])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.debug("native Canvas stderr reader ended for session=%s: %s", sid, exc)
+
+
+async def _native_mp4_body(
+    proc: asyncio.subprocess.Process,
+    session: Session,
+    stderr_task: asyncio.Task,
+):
+    """Stream fragmented MP4 chunks and tear FFmpeg down on disconnect/stop."""
+    try:
+        if proc.stdout is None:
+            return
+        while not session.cancel_event.is_set():
+            chunk = await proc.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.5)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    pass
+        if not stderr_task.done():
+            stderr_task.cancel()
+        try:
+            await stderr_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@app.get("/media")
+async def native_canvas_media(request: Request):
+    """Browser-native stream endpoint used only by Canvas mode."""
+    session_id = request.query_params.get("session")
+    if not session_id:
+        return Response(status_code=400, content="missing session id")
+    session = get_manager().get(session_id)
+    if session is None or session.media is None:
+        return Response(status_code=404, content="unknown or stale session id")
+    if session.display_mode != "canvas":
+        return Response(status_code=409, content="native media is only available in Canvas mode")
+
+    try:
+        command = _native_mp4_command(session)
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as exc:
+        log.exception("could not start native Canvas FFmpeg process for session=%s", session_id)
+        return Response(status_code=502, content="could not start native video stream")
+
+    stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
+    log.info(
+        "native Canvas stream opened session=%s format=%s muxed_audio=%s",
+        session_id, session.media.format_note, bool(session.media.audio_url),
+    )
+    return StreamingResponse(
+        _native_mp4_body(proc, session, stderr_task),
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Accept-Ranges": "none",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 class AuthRequest(BaseModel):
     pin: str
 
@@ -258,6 +397,8 @@ async def api_play(req: PlayRequest):
             "fps": preset_cfg["fps_cap"],
             "mode": preset_cfg["mode"],
             "display_mode": session.display_mode,
+            "canvas_width": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["width"],
+            "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
         }
 
     # Superseded during resolve (rare race — another Play beat us).
