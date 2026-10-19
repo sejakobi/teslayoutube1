@@ -7,8 +7,9 @@ the ASCILINE color frame format on an executor, and yielded straight to
 the WebSocket.  No consumer-side pacing — the producer's source pacing
 is what makes the cadence even.
 
-Audio: a second ffmpeg encodes the same source to AAC/ADTS and pipes
-chunks to the /audio HTTP endpoint.
+Audio: a second ffmpeg encodes the selected audio source as MP3 and pipes
+chunks to the /audio HTTP endpoint. Stream-specific HTTP headers from yt-dlp
+are forwarded to FFmpeg for the YouTube CDN requests.
 """
 
 from __future__ import annotations
@@ -47,7 +48,42 @@ class PresetSpec:
     mode: int          # 1-5; we ship 2 (Low) and 3 (Med/High)
 
 
-def _build_ffmpeg_cmd(media_url: str, preset: PresetSpec) -> list[str]:
+def _ffmpeg_input_header_args(headers: Optional[dict[str, str]]) -> list[str]:
+    """Translate yt-dlp request headers into FFmpeg HTTP input options."""
+    normalised: dict[str, tuple[str, str]] = {}
+    for key, value in (headers or {}).items():
+        if not key or value is None:
+            continue
+        name = str(key).strip()
+        if not name or "\r" in name or "\n" in name or ":" in name:
+            continue
+        text_value = str(value).replace("\r", "").replace("\n", "")
+        normalised[name.lower()] = (name, text_value)
+
+    args: list[str] = []
+    user_agent = normalised.pop("user-agent", None)
+    referer = normalised.pop("referer", None)
+    if user_agent and user_agent[1]:
+        args.extend(["-user_agent", user_agent[1]])
+    if referer and referer[1]:
+        args.extend(["-referer", referer[1]])
+
+    # FFmpeg expects each custom HTTP header to end in CRLF. These are input
+    # options and therefore must appear before the corresponding -i argument.
+    if normalised:
+        raw_headers = "".join(
+            f"{original_name}: {value}\r\n"
+            for original_name, value in normalised.values()
+        )
+        args.extend(["-headers", raw_headers])
+    return args
+
+
+def _build_ffmpeg_cmd(
+    media_url: str,
+    preset: PresetSpec,
+    headers: Optional[dict[str, str]] = None,
+) -> list[str]:
     # `-re` (before `-i`) makes ffmpeg read the input at native realtime
     # rate, so frames arrive on the consumer side evenly paced rather than
     # in bursts.  `-fps_mode cfr -r N` then duplicates/drops to a constant
@@ -60,6 +96,7 @@ def _build_ffmpeg_cmd(media_url: str, preset: PresetSpec) -> list[str]:
         "-loglevel", "warning",
         "-nostdin",
         "-re",
+        *_ffmpeg_input_header_args(headers),
         "-i", media_url,
         "-an",
         "-vf", f"scale={preset.cols}:{preset.rows}:flags=fast_bilinear",
@@ -71,12 +108,16 @@ def _build_ffmpeg_cmd(media_url: str, preset: PresetSpec) -> list[str]:
     ]
 
 
-def _build_audio_ffmpeg_cmd(audio_url: str) -> list[str]:
+def _build_audio_ffmpeg_cmd(
+    audio_url: str,
+    headers: Optional[dict[str, str]] = None,
+) -> list[str]:
     return [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "warning",
         "-nostdin",
+        *_ffmpeg_input_header_args(headers),
         "-i", audio_url,
         "-vn",
         # MP3 is broadly supported by HTMLAudioElement across desktop browsers.
@@ -90,9 +131,15 @@ def _build_audio_ffmpeg_cmd(audio_url: str) -> list[str]:
 class VideoPipeline:
     """One-shot streaming pipeline.  Build a fresh instance per Play."""
 
-    def __init__(self, media_url: str, preset: PresetSpec):
+    def __init__(
+        self,
+        media_url: str,
+        preset: PresetSpec,
+        headers: Optional[dict[str, str]] = None,
+    ):
         self.media_url = media_url
         self.preset = preset
+        self.headers = dict(headers or {})
         self._proc: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
         self._stderr_drain: Optional[threading.Thread] = None
@@ -112,7 +159,7 @@ class VideoPipeline:
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue(maxsize=_FRAME_QUEUE_MAX)
 
-        cmd = _build_ffmpeg_cmd(self.media_url, self.preset)
+        cmd = _build_ffmpeg_cmd(self.media_url, self.preset, self.headers)
         log.info("ffmpeg start: %sx%s @ %s fps mode=%s",
                  self.preset.cols, self.preset.rows,
                  self.preset.fps_cap, self.preset.mode)
@@ -255,17 +302,23 @@ class VideoPipeline:
 
 
 class AudioPipeline:
-    """One-shot AAC/ADTS audio pipeline.  Build a fresh instance per Play."""
+    """One-shot MP3 audio pipeline. Build a fresh instance per Play."""
 
-    def __init__(self, audio_url: str):
+    def __init__(
+        self,
+        audio_url: str,
+        headers: Optional[dict[str, str]] = None,
+    ):
         self.audio_url = audio_url
+        self.headers = dict(headers or {})
         self._proc: Optional[subprocess.Popen] = None
         self._stderr_drain: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
     def start(self) -> None:
-        cmd = _build_audio_ffmpeg_cmd(self.audio_url)
-        log.info("audio ffmpeg start: url=%s…", self.audio_url[:60])
+        cmd = _build_audio_ffmpeg_cmd(self.audio_url, self.headers)
+        # Avoid logging signed YouTube URLs or request header values.
+        log.info("audio ffmpeg start: request_headers=%s", bool(self.headers))
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
