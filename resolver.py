@@ -38,14 +38,13 @@ class ResolvedMedia:
 
 
 def _ydl_opts(max_height: int) -> dict:
-    """Build yt-dlp options."""
+    """Build yt-dlp options with flexible format fallbacks."""
 
-       fmt = (
+    fmt = (
         f"bestvideo[height<={max_height}]+bestaudio"
         f"/best[height<={max_height}]"
         f"/best"
     )
-
 
     return {
         "format": fmt,
@@ -64,7 +63,7 @@ def _ydl_opts(max_height: int) -> dict:
 
 
 def _extract(url: str, max_height: int) -> dict:
-    """Extract video information, optionally using session cookies."""
+    """Extract video metadata and stream URLs using optional cookies."""
 
     opts = _ydl_opts(max_height)
     cookie_path = None
@@ -101,7 +100,6 @@ def _extract(url: str, max_height: int) -> dict:
 
             opts["cookiefile"] = cookie_path
 
-        # Keep the temporary file available for all extraction calls.
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
@@ -196,6 +194,7 @@ def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
         if video_fmt and video_fmt.get("url"):
             return video_fmt["url"], None
 
+    # A single selected format may already contain video and audio.
     url = info.get("url")
 
     if not url:
