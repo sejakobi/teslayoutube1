@@ -840,6 +840,7 @@ async function doPlay() {
     if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
 
     appState      = 'resolving';
+    if (watchStartButton) watchStartButton.classList.add('hidden');
     currentPreset = selectedPreset;
     setUiState('resolving');
     setStatus('RESOLVING…', 'resolving');
@@ -859,11 +860,13 @@ async function doPlay() {
     } catch (err) {
         setError('Network error — ' + err.message);
         setUiState('idle');
+        if (watchStartButton) watchStartButton.classList.remove('hidden');
         return;
     }
     if (!resp.ok) {
         setError(data.error || `Server error ${resp.status}`);
         setUiState('idle');
+        if (watchStartButton) watchStartButton.classList.remove('hidden');
         return;
     }
 
@@ -1226,7 +1229,42 @@ function loadMoreSearchResults() {
     return executeSearch(activeSearchParams, { append: true });
 }
 
-// ───────── Wiring ─────────
+// ───────── Wiring / watch-page auto-start ─────────
+// A watch link may pass the selected YouTube video as ?v=ID, ?video=ID,
+// ?video_id=ID, ?id=ID, or a general search/URL as ?q=... . When a video
+// identifier is present, populate the player and start automatically.
+const watchStartButton = document.getElementById('watch-start');
+const watchParams = new URLSearchParams(window.location.search);
+const initialWatchQuery = (
+    watchParams.get('v') ||
+    watchParams.get('video') ||
+    watchParams.get('video_id') ||
+    watchParams.get('id') ||
+    watchParams.get('q') ||
+    watchParams.get('query') ||
+    ''
+).trim();
+
+if (initialWatchQuery) {
+    queryInput.value = initialWatchQuery;
+    // Wait until the deferred script has completed wiring before starting.
+    window.addEventListener('load', () => {
+        if (appState === 'idle') void doPlay();
+    }, { once: true });
+}
+
+if (watchStartButton) {
+    watchStartButton.addEventListener('click', () => {
+        const query = queryInput.value.trim();
+        if (query) {
+            watchStartButton.classList.add('hidden');
+            void doPlay();
+        } else {
+            queryInput.focus();
+        }
+    });
+}
+
 btnPlay.addEventListener('click', doPlay);
 btnSearch.addEventListener('click', () => doSearch(currentSearchType));
 if (btnCloseSearch) btnCloseSearch.addEventListener('click', () => searchPanel.classList.add('hidden'));
