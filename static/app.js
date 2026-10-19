@@ -123,14 +123,14 @@ volumeSlider.addEventListener('input', () => {
     if (audioEl) audioEl.volume = volume;
     if (canvasSource) canvasSource.volume = volume;
     isMuted = volume === 0;
-    if (canvasSource && canvasVideoMode) canvasSource.muted = isMuted;
+    if (canvasSource && canvasVideoMode) canvasSource.muted = true;
     updateMuteBtn();
 });
 
 btnMute.addEventListener('click', () => {
     isMuted = !isMuted;
     if (audioEl) audioEl.muted = isMuted;
-    if (canvasSource) canvasSource.muted = isMuted;
+    if (canvasSource) canvasSource.muted = true;
     updateMuteBtn();
 });
 
@@ -446,8 +446,8 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     canvasSource.playsInline = true;
     canvasSource.controls = false;
     canvasSource.preload = 'auto';
-    canvasSource.muted = isMuted;
-    canvasSource.volume = parseFloat(volumeSlider.value);
+    canvasSource.muted = true;
+    canvasSource.volume = 0;
 
     canvasSource.onloadedmetadata = () => {
         if (appState !== 'playing' || !canvasVideoMode) return;
@@ -491,6 +491,17 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     setStatus('BUFFERING · CANVAS', 'resolving');
     canvasSource.src = `/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
     canvasSource.load();
+    if (audioEl) {
+        audioEl.pause();
+        audioEl.src = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
+        audioEl.muted = isMuted;
+        audioEl.volume = parseFloat(volumeSlider.value);
+        audioEl.load();
+        audioEl.play().catch(() => {
+            statusPerf.textContent = 'Tonfreigabe erforderlich – bitte erneut auf Wiedergabe tippen.';
+            statusPerf.classList.remove('hidden');
+        });
+    }
     canvasSource.play().catch((err) => {
         if (appState !== 'playing' || !canvasVideoMode) return;
         if (err && err.name === 'NotAllowedError') {
@@ -507,6 +518,9 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
 canvas.addEventListener('click', () => {
     if (canvasVideoMode && canvasSource && canvasSource.paused && appState === 'playing') {
         canvasSource.play().catch(() => {});
+    }
+    if (canvasVideoMode && audioEl && audioEl.paused && appState === 'playing') {
+        audioEl.play().catch(() => {});
     }
 });
 
@@ -695,9 +709,12 @@ async function doPlay() {
     setUiState('playing');
     updateTitle(data.title, data.is_live);
     
-    // Erzwingt immer den WebSocket-Stream (kein <video>-Element mehr nötig)
     idleOverlay.classList.add('hidden');
-    connectWs(sessionId);
+    if (selectedDisplayMode === 'canvas' || selection) {
+        startNativeCanvasMedia(sessionId, data.canvas_width, data.canvas_height);
+    } else {
+        connectWs(sessionId);
+    }
     startPoll();
 }
 

@@ -130,11 +130,15 @@ class SessionManager:
                 audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
                 audio_pipeline.start()
             else:
-                # In Canvas mode do not launch the per-frame JPEG/WebSocket
-                # pipeline. /media remuxes the selected streams for the browser
-                # and the browser's native decoder paints directly to Canvas.
+                # Canvas video and audio use independent transports. The browser
+                # paints decoded video frames onto the visible Canvas while the
+                # MP3 audio stream is delivered by /audio.
+                audio_src = media.audio_url if media.audio_url else media.video_url
+                audio_headers = media.audio_headers if media.audio_url else media.video_headers
+                audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
+                audio_pipeline.start()
                 log.info(
-                    "session %s: native Canvas selected max_height=%d format=%s",
+                    "session %s: native Canvas selected max_height=%d format=%s; separate audio started",
                     session_id, requested_height, media.format_note,
                 )
 
