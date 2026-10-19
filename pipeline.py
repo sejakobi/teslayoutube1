@@ -83,6 +83,11 @@ def _build_ffmpeg_cmd(
     media_url: str,
     preset: PresetSpec,
     headers: Optional[dict[str, str]] = None,
+    *,
+    display_mode: str = "ascii",
+    frame_width: Optional[int] = None,
+    frame_height: Optional[int] = None,
+    fps_cap: Optional[int] = None,
 ) -> list[str]:
     # `-re` (before `-i`) makes ffmpeg read the input at native realtime
     # rate, so frames arrive on the consumer side evenly paced rather than
@@ -90,6 +95,18 @@ def _build_ffmpeg_cmd(
     # N fps stream so the wire frame count matches `targetFps` exactly.
     # Live HLS sources are already realtime — `-re` is then redundant but
     # harmless (it caps read speed; live is already capped).
+    if display_mode == "canvas":
+        width = int(frame_width or 640)
+        height = int(frame_height or 360)
+        fps = int(fps_cap or preset.fps_cap)
+        video_filter = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=fast_bilinear,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+        )
+    else:
+        width, height, fps = preset.cols, preset.rows, preset.fps_cap
+        video_filter = f"scale={width}:{height}:flags=fast_bilinear"
+
     return [
         "ffmpeg",
         "-hide_banner",
@@ -99,9 +116,9 @@ def _build_ffmpeg_cmd(
         *_ffmpeg_input_header_args(headers),
         "-i", media_url,
         "-an",
-        "-vf", f"scale={preset.cols}:{preset.rows}:flags=fast_bilinear",
+        "-vf", video_filter,
         "-fps_mode", "cfr",
-        "-r", str(preset.fps_cap),
+        "-r", str(fps),
         "-f", "rawvideo",
         "-pix_fmt", "bgr24",
         "pipe:1",
@@ -136,10 +153,21 @@ class VideoPipeline:
         media_url: str,
         preset: PresetSpec,
         headers: Optional[dict[str, str]] = None,
+        *,
+        display_mode: str = "ascii",
+        frame_width: Optional[int] = None,
+        frame_height: Optional[int] = None,
+        fps_cap: Optional[int] = None,
+        jpeg_quality: int = 80,
     ):
         self.media_url = media_url
         self.preset = preset
         self.headers = dict(headers or {})
+        self.display_mode = "canvas" if display_mode == "canvas" else "ascii"
+        self.frame_width = int(frame_width or preset.cols)
+        self.frame_height = int(frame_height or preset.rows)
+        self.target_fps = int(fps_cap or preset.fps_cap)
+        self.jpeg_quality = max(40, min(95, int(jpeg_quality)))
         self._proc: Optional[subprocess.Popen] = None
         self._reader: Optional[threading.Thread] = None
         self._stderr_drain: Optional[threading.Thread] = None
@@ -151,7 +179,9 @@ class VideoPipeline:
         self.frames_sent = 0
 
     def init_message(self) -> str:
-        """Plain-text INIT message (PROTOCOL-NOTES §2)."""
+        """Text handshake selecting the client-side frame decoder."""
+        if self.display_mode == "canvas":
+            return f"CANVAS_INIT:{float(self.target_fps)}:{self.frame_width}:{self.frame_height}"
         p = self.preset
         return f"INIT:{float(p.fps_cap)}:{p.mode}:{p.cols}:{p.rows}:0"
 
@@ -159,10 +189,19 @@ class VideoPipeline:
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue(maxsize=_FRAME_QUEUE_MAX)
 
-        cmd = _build_ffmpeg_cmd(self.media_url, self.preset, self.headers)
-        log.info("ffmpeg start: %sx%s @ %s fps mode=%s",
-                 self.preset.cols, self.preset.rows,
-                 self.preset.fps_cap, self.preset.mode)
+        cmd = _build_ffmpeg_cmd(
+            self.media_url, self.preset, self.headers,
+            display_mode=self.display_mode,
+            frame_width=self.frame_width,
+            frame_height=self.frame_height,
+            fps_cap=self.target_fps,
+        )
+        if self.display_mode == "canvas":
+            log.info("ffmpeg start: canvas %sx%s @ %s fps request_headers=%s",
+                     self.frame_width, self.frame_height, self.target_fps, bool(self.headers))
+        else:
+            log.info("ffmpeg start: ASCII %sx%s @ %s fps request_headers=%s",
+                     self.preset.cols, self.preset.rows, self.preset.fps_cap, bool(self.headers))
         self._proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -210,7 +249,7 @@ class VideoPipeline:
         loop = self._loop
         if proc is None or loop is None or proc.stdout is None:
             return
-        frame_bytes = self.preset.cols * self.preset.rows * 3
+        frame_bytes = self.frame_width * self.frame_height * 3
         try:
             while not self._stop.is_set():
                 # Loop the read explicitly so a short final read does not
@@ -273,8 +312,24 @@ class VideoPipeline:
             pass
 
     async def frames(self) -> AsyncIterator[bytes]:
-        """Drain the queue, encode each frame, yield wire-format bytes."""
+        """Yield either JPEG frames for Canvas or the existing ASCILINE frame protocol."""
         assert self._queue is not None
+        loop = asyncio.get_running_loop()
+        frame_index = 0
+
+        if self.display_mode == "canvas":
+            while True:
+                raw = await self._queue.get()
+                if not raw:
+                    return
+                payload = await loop.run_in_executor(
+                    None, _encode_jpeg_frame, raw, frame_index,
+                    self.frame_width, self.frame_height, self.jpeg_quality,
+                )
+                yield payload
+                frame_index += 1
+            return
+
         mapper = AsciiMapper()
         char_byte_lut = np.array([ord(c) for c in mapper._lut], dtype=np.uint8)
         n_chars = mapper._n
@@ -282,16 +337,11 @@ class VideoPipeline:
         cols, rows = self.preset.cols, self.preset.rows
         send_buf = bytearray(4 + rows * cols * 4)
 
-        loop = asyncio.get_running_loop()
-        frame_index = 0
-
         while True:
             raw = await self._queue.get()
             if not raw:
                 return  # EOF sentinel
 
-            # Encode in the executor — luminance/quantisation are CPU-bound
-            # (a few ms at HIGH 200×84) and we don't want them on the loop.
             payload = await loop.run_in_executor(
                 None,
                 _encode_frame,
@@ -376,6 +426,23 @@ class AudioPipeline:
             if not chunk:
                 break
             yield chunk
+
+
+def _encode_jpeg_frame(
+    raw: bytes,
+    frame_index: int,
+    width: int,
+    height: int,
+    quality: int,
+) -> bytes:
+    """Encode one BGR frame as JPEG and prefix a 32-bit big-endian frame index."""
+    bgr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
+    ok, encoded = cv2.imencode(
+        ".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    )
+    if not ok:
+        raise RuntimeError("OpenCV could not encode a Canvas frame as JPEG")
+    return struct.pack(">I", frame_index) + encoded.tobytes()
 
 
 def _encode_frame(
