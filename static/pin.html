@@ -4,282 +4,474 @@
   <meta charset="utf-8">
   <title>ASCILINE — Enter PIN</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    /* Inline minimal theme — matches style.css variables without importing it
-       so this page loads before /static/ is auth-gated. */
+    /* =========================================================
+       SYSTEM-ADAPTIVE APPLE LIQUID GLASS & YOUTUBE RED DESIGN
+       ========================================================= */
     :root {
-      --bg:        #000000;
-      --bg2:       #0d0d0d;
-      --bg3:       #1a1a1a;
-      --border:    #2a2a2a;
-      --border-hi: #3d3d3d;
-      --accent:    #F5A623;
-      --accent-dim:#b87a18;
-      --fg:        #e8e8e8;
-      --fg-dim:    #888;
-      --fg-faint:  #444;
-      --red:       #e84040;
-      --green:     #3ecf6e;
-      --font-ui:   'Arial Narrow', Arial, sans-serif;
-      --font-mono: 'Courier New', monospace;
+      color-scheme: light dark;
+      
+      --bg: #f8f9fa;
+      --surface-glass: rgba(255, 255, 255, 0.78);
+      --surface-glass-solid: rgba(255, 255, 255, 0.94);
+      --surface-card: rgba(0, 0, 0, 0.03);
+      --surface-card-hover: rgba(0, 0, 0, 0.07);
+      
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.16);
+      
+      --text-primary: #0f0f0f;
+      --text-secondary: #606060;
+      
+      --yt-red: #ff0000;
+      --yt-red-hover: #cc0000;
+      --yt-red-glow: rgba(255, 0, 0, 0.28);
+      
+      --radius-xl: 28px;
+      --radius-lg: 18px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+      
+      --shadow-floating: 0 30px 80px rgba(0, 0, 0, 0.16), 0 4px 16px rgba(0, 0, 0, 0.06);
+      
+      --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --transition: all 0.4s var(--ease-apple);
     }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f0f12;
+        --surface-glass: rgba(24, 24, 28, 0.78);
+        --surface-glass-solid: rgba(22, 22, 26, 0.94);
+        --surface-card: rgba(255, 255, 255, 0.04);
+        --surface-card-hover: rgba(255, 255, 255, 0.08);
+        
+        --border: rgba(255, 255, 255, 0.09);
+        --border-strong: rgba(255, 255, 255, 0.2);
+        
+        --text-primary: #f1f1f1;
+        --text-secondary: #aaa;
+        
+        --shadow-floating: 0 32px 90px rgba(0, 0, 0, 0.75);
+      }
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       height: 100%;
+      min-height: 100vh;
       background: var(--bg);
-      color: var(--fg);
-      font-family: var(--font-ui);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
       display: flex;
       align-items: center;
       justify-content: center;
       -webkit-font-smoothing: antialiased;
+      overflow: hidden;
     }
 
-    #card {
-      width: 320px;
+    /* =========================================================
+       1. NORDLICHT / AURORA INTRO OVERLAY
+       ========================================================= */
+    #cyber-intro {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #000000;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 0;
+      justify-content: center;
+      transition: opacity 0.8s var(--ease-apple), visibility 0.8s var(--ease-apple);
+      cursor: pointer;
+      overflow: hidden;
+    }
+    
+    #cyber-intro.fade-out {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .aurora-container {
+      position: absolute;
+      inset: -50%;
+      width: 200%;
+      height: 200%;
+      opacity: 0.85;
+      filter: blur(60px);
+      pointer-events: none;
+      transform: rotate(-15deg);
+    }
+
+    .aurora-beam {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-size: 200% 200%;
+      animation: auroraFlow 4s ease-in-out infinite alternate;
+    }
+
+    .aurora-beam:nth-child(1) {
+      background: linear-gradient(115deg, transparent 20%, rgba(255, 0, 76, 0.6) 40%, rgba(0, 240, 255, 0.5) 60%, transparent 80%);
+      animation-duration: 3.5s;
+    }
+
+    .aurora-beam:nth-child(2) {
+      background: linear-gradient(135deg, transparent 25%, rgba(183, 0, 255, 0.5) 45%, rgba(255, 215, 0, 0.4) 65%, transparent 85%);
+      animation-duration: 4.5s;
+      animation-delay: -1s;
+    }
+
+    .aurora-beam:nth-child(3) {
+      background: linear-gradient(105deg, transparent 30%, rgba(255, 0, 0, 0.7) 50%, rgba(0, 255, 170, 0.4) 70%, transparent 90%);
+      animation-duration: 5s;
+      animation-delay: -2s;
+    }
+
+    @keyframes auroraFlow {
+      0% { transform: translateY(-10%) scaleY(0.9) translateX(-5%); }
+      100% { transform: translateY(10%) scaleY(1.2) translateX(5%); }
+    }
+
+
+
+    @keyframes logoPulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 30px rgba(255, 0, 0, 0.6); }
+      100% { transform: scale(1.05); box-shadow: 0 0 60px rgba(255, 0, 0, 0.9), 0 0 30px rgba(0, 240, 255, 0.6); }
+    }
+
+    .intro-title {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
+    }
+
+    /* =========================================================
+       2. SCHWEBENDE APPLE LIQUID GLASS PIN CARD
+       ========================================================= */
+    #card {
+      width: min(92vw, 380px);
+      background: var(--surface-glass-solid);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      padding: 36px 28px 32px 28px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: var(--shadow-floating);
+      position: relative;
+      z-index: 10;
+      animation: floatCard 4s ease-in-out infinite alternate;
+    }
+
+    @keyframes floatCard {
+      0% { transform: translateY(0px); }
+      100% { transform: translateY(-6px); }
     }
 
     #brand {
-      font-size: 28px;
-      font-weight: 700;
-      letter-spacing: 6px;
-      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--text-primary);
       margin-bottom: 6px;
       user-select: none;
     }
+
+    #brand::before {
+      content: '▶';
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      background: var(--yt-red);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: #ffffff;
+      box-shadow: 0 4px 14px var(--yt-red-glow);
+    }
+
     #subtitle {
       font-size: 12px;
-      letter-spacing: 3px;
-      color: var(--fg-faint);
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
       text-transform: uppercase;
-      margin-bottom: 32px;
+      margin-bottom: 28px;
       user-select: none;
     }
 
-    /* PIN dots */
+    /* PIN DOTS MIT YOUTUBE-RED GLOW */
     #pin-display {
       display: flex;
       gap: 14px;
-      margin-bottom: 24px;
-      min-height: 20px;
+      margin-bottom: 16px;
+      min-height: 24px;
       align-items: center;
       justify-content: center;
     }
+
     .pin-dot {
       width: 14px;
       height: 14px;
       border-radius: 50%;
-      border: 2px solid var(--border-hi);
+      border: 2px solid var(--border-strong);
       background: transparent;
-      transition: background 120ms, border-color 120ms;
+      transition: transform 0.2s var(--ease-bounce), background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     }
+
     .pin-dot.filled {
-      background: var(--accent);
-      border-color: var(--accent);
+      background: var(--yt-red);
+      border-color: var(--yt-red);
+      transform: scale(1.15);
+      box-shadow: 0 0 12px var(--yt-red-glow);
     }
 
-    /* Status message */
+    /* STATUS MESSAGE */
     #msg {
-      height: 22px;
+      height: 24px;
       font-size: 13px;
-      font-family: var(--font-mono);
-      letter-spacing: 0.5px;
-      color: var(--fg-dim);
-      margin-bottom: 20px;
+      font-weight: 600;
+      font-family: "JetBrains Mono", monospace;
+      color: var(--text-secondary);
+      margin-bottom: 22px;
       text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    #msg.error { color: var(--red); }
-    #msg.locked { color: var(--red); }
 
-    /* Keypad */
+    #msg.error, #msg.locked {
+      color: var(--yt-red);
+      animation: shake 0.4s var(--ease-apple);
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-6px); }
+      40%, 80% { transform: translateX(6px); }
+    }
+
+    /* KEYPAD BUTTONS */
     #keypad {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
+      gap: 12px;
       width: 100%;
     }
+
     .key {
-      height: 72px;
-      background: var(--bg3);
-      border: 1.5px solid var(--border-hi);
-      border-radius: 8px;
-      color: var(--fg);
-      font-size: 26px;
+      height: 64px;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      color: var(--text-primary);
+      font-size: 22px;
       font-weight: 600;
-      font-family: var(--font-ui);
       cursor: pointer;
       user-select: none;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background 80ms, border-color 80ms, transform 60ms;
+      transition: transform 0.2s var(--ease-bounce), background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
     }
+
+    .key:hover:not(:disabled) {
+      background: var(--surface-card-hover);
+      border-color: var(--border-strong);
+      transform: translateY(-2px);
+    }
+
     .key:active:not(:disabled) {
-      background: var(--accent-dim);
-      border-color: var(--accent);
-      transform: scale(0.94);
+      transform: scale(0.92);
+      box-shadow: none;
     }
+
     .key:disabled {
-      opacity: 0.35;
+      opacity: 0.3;
       cursor: not-allowed;
+      transform: none;
     }
+
     .key-clear {
-      font-size: 16px;
+      font-size: 13px;
       font-weight: 700;
-      letter-spacing: 1px;
-      color: var(--fg-dim);
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
     }
-    .key-zero {
-      /* 0 sits in the middle column of the last row */
-    }
+
     .key-submit {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: #000;
-      font-size: 20px;
+      background: var(--yt-red);
+      border: none;
+      color: #ffffff;
+      font-size: 22px;
+      font-weight: 700;
+      box-shadow: 0 6px 18px var(--yt-red-glow);
     }
+
     .key-submit:hover:not(:disabled) {
-      background: #ffb838;
-      border-color: #ffb838;
+      background: var(--yt-red-hover);
+      box-shadow: 0 8px 24px var(--yt-red-glow);
     }
   </style>
 </head>
 <body>
 
-<div id="card">
-  <div id="brand">ASCILINE</div>
-  <div id="subtitle">Enter PIN to continue</div>
 
-  <div id="pin-display"></div>
-  <div id="msg"></div>
+  <!-- 2. PIN CARD -->
+  <div id="card">
+    <div id="brand">CYBER.cinema</div>
+    <div id="subtitle"></div>
 
-  <div id="keypad">
-    <button class="key" data-digit="1">1</button>
-    <button class="key" data-digit="2">2</button>
-    <button class="key" data-digit="3">3</button>
-    <button class="key" data-digit="4">4</button>
-    <button class="key" data-digit="5">5</button>
-    <button class="key" data-digit="6">6</button>
-    <button class="key" data-digit="7">7</button>
-    <button class="key" data-digit="8">8</button>
-    <button class="key" data-digit="9">9</button>
-    <button class="key key-clear" data-action="clear">CLR</button>
-    <button class="key key-zero" data-digit="0">0</button>
-    <button class="key key-submit" data-action="submit">&#10003;</button>
+    <div id="pin-display"></div>
+    <div id="msg"></div>
+
+    <div id="keypad">
+      <button class="key" data-digit="1">1</button>
+      <button class="key" data-digit="2">2</button>
+      <button class="key" data-digit="3">3</button>
+      <button class="key" data-digit="4">4</button>
+      <button class="key" data-digit="5">5</button>
+      <button class="key" data-digit="6">6</button>
+      <button class="key" data-digit="7">7</button>
+      <button class="key" data-digit="8">8</button>
+      <button class="key" data-digit="9">9</button>
+      <button class="key key-clear" data-action="clear">LÖSCHEN</button>
+      <button class="key key-zero" data-digit="0">0</button>
+      <button class="key key-submit" data-action="submit">&#10003;</button>
+    </div>
   </div>
-</div>
 
-<script>
-(function () {
-  const MAX_LEN = 8;
-  let pin = "";
-  let locked = false;
-
-  const display = document.getElementById("pin-display");
-  const msg     = document.getElementById("msg");
-  const keys    = document.querySelectorAll(".key");
-
-  function renderDots(len) {
-    display.innerHTML = "";
-    for (let i = 0; i < Math.max(len, 4); i++) {
-      const d = document.createElement("div");
-      d.className = "pin-dot" + (i < len ? " filled" : "");
-      display.appendChild(d);
+  <script>
+  function closeIntro() {
+    const intro = document.getElementById('cyber-intro');
+    if (intro && !intro.classList.contains('fade-out')) {
+      intro.classList.add('fade-out');
     }
   }
 
-  function setMsg(text, cls) {
-    msg.textContent = text;
-    msg.className = cls || "";
-  }
+  (function () {
+    // Auto Fadeout Intro
+    setTimeout(closeIntro, 2200);
 
-  function setDisabled(state) {
-    keys.forEach(k => k.disabled = state);
-  }
+    const MAX_LEN = 8;
+    let pin = "";
+    let locked = false;
 
-  renderDots(0);
+    const display = document.getElementById("pin-display");
+    const msg     = document.getElementById("msg");
+    const keys    = document.querySelectorAll(".key");
 
-  document.getElementById("keypad").addEventListener("click", function (e) {
-    if (locked) return;
-    const btn = e.target.closest(".key");
-    if (!btn || btn.disabled) return;
-
-    const digit  = btn.dataset.digit;
-    const action = btn.dataset.action;
-
-    if (digit !== undefined) {
-      if (pin.length < MAX_LEN) {
-        pin += digit;
-        renderDots(pin.length);
-        setMsg("");
+    function renderDots(len) {
+      display.innerHTML = "";
+      for (let i = 0; i < Math.max(len, 4); i++) {
+        const d = document.createElement("div");
+        d.className = "pin-dot" + (i < len ? " filled" : "");
+        display.appendChild(d);
       }
-    } else if (action === "clear") {
-      pin = "";
-      renderDots(0);
-      setMsg("");
-    } else if (action === "submit") {
-      if (pin.length === 0) { setMsg("Enter your PIN", ""); return; }
-      submit();
     }
-  });
 
-  // Also support physical keyboard for desktop testing.
-  document.addEventListener("keydown", function (e) {
-    if (locked) return;
-    if (e.key >= "0" && e.key <= "9") {
-      if (pin.length < MAX_LEN) {
-        pin += e.key;
-        renderDots(pin.length);
-        setMsg("");
-      }
-    } else if (e.key === "Backspace") {
-      pin = pin.slice(0, -1);
-      renderDots(pin.length);
-      setMsg("");
-    } else if (e.key === "Enter") {
-      submit();
+    function setMsg(text, cls) {
+      msg.textContent = text;
+      msg.className = cls || "";
     }
-  });
 
-  function submit() {
-    setDisabled(true);
-    setMsg("Checking…", "");
+    function setDisabled(state) {
+      keys.forEach(k => k.disabled = state);
+    }
 
-    fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin: pin }),
-    })
-    .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
-    .then(function (res) {
-      if (res.status === 200) {
-        setMsg("OK", "");
-        // Small delay so the user sees "OK" before redirect.
-        setTimeout(function () { window.location.replace("/"); }, 300);
-      } else if (res.status === 429) {
-        locked = true;
-        setDisabled(true);
-        const secs = res.data.retry_after || 600;
-        setMsg("Too many attempts. Wait " + Math.ceil(secs / 60) + " min.", "locked");
-      } else {
+    renderDots(0);
+
+    document.getElementById("keypad").addEventListener("click", function (e) {
+      if (locked) return;
+      const btn = e.target.closest(".key");
+      if (!btn || btn.disabled) return;
+
+      const digit  = btn.dataset.digit;
+      const action = btn.dataset.action;
+
+      if (digit !== undefined) {
+        if (pin.length < MAX_LEN) {
+          pin += digit;
+          renderDots(pin.length);
+          setMsg("");
+        }
+      } else if (action === "clear") {
         pin = "";
         renderDots(0);
-        setDisabled(false);
-        setMsg("Wrong PIN", "error");
+        setMsg("");
+      } else if (action === "submit") {
+        if (pin.length === 0) { setMsg("Enter your PIN", ""); return; }
+        submit();
       }
-    })
-    .catch(function () {
-      setDisabled(false);
-      setMsg("Network error", "error");
     });
-  }
-})();
-</script>
+
+    // Support physical keyboard
+    document.addEventListener("keydown", function (e) {
+      if (locked) return;
+      if (e.key >= "0" && e.key <= "9") {
+        if (pin.length < MAX_LEN) {
+          pin += e.key;
+          renderDots(pin.length);
+          setMsg("");
+        }
+      } else if (e.key === "Backspace") {
+        pin = pin.slice(0, -1);
+        renderDots(pin.length);
+        setMsg("");
+      } else if (e.key === "Enter") {
+        submit();
+      }
+    });
+
+    function submit() {
+      setDisabled(true);
+      setMsg("Checking…", "");
+
+      fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pin }),
+      })
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, data: d }; }); })
+      .then(function (res) {
+        if (res.status === 200) {
+          setMsg("OK", "");
+          setTimeout(function () { window.location.replace("/"); }, 300);
+        } else if (res.status === 429) {
+          locked = true;
+          setDisabled(true);
+          const secs = res.data.retry_after || 600;
+          setMsg("Too many attempts. Wait " + Math.ceil(secs / 60) + " min.", "locked");
+        } else {
+          pin = "";
+          renderDots(0);
+          setDisabled(false);
+          setMsg("Wrong PIN", "error");
+        }
+      })
+      .catch(function () {
+        setDisabled(false);
+        setMsg("Network error", "error");
+      });
+    }
+  })();
+  </script>
 </body>
 </html>
