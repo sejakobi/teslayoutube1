@@ -121,34 +121,132 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(q: str = ""):
-    """Search YouTube videos via the server-side YouTube Data API v3."""
+async def api_search(
+    q: str = "",
+    search_type: str = "video",
+    page_token: str = "",
+    channel_id: str = "",
+    uploads_playlist_id: str = "",
+    order: str = "relevance",
+    max_results: int = 25,
+):
+    """Search videos/channels and page through all public channel uploads."""
     query = q.strip()
-    if not query:
+    kind = (search_type or "video").strip().lower()
+    channel_id = channel_id.strip()
+    uploads_playlist_id = uploads_playlist_id.strip()
+    page_token = page_token.strip()
+
+    if kind not in {"video", "channel"}:
+        return JSONResponse(status_code=400, content={"error": "Ungültiger Suchtyp."})
+    if channel_id:
+        # Channel browsing uses the channel's uploads playlist, not search relevance.
+        kind = "video"
+        if len(channel_id) > 200:
+            return JSONResponse(status_code=400, content={"error": "Die Kanal-ID ist ungültig."})
+    elif not query:
         return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
     if len(query) > 200:
         return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
+    if len(page_token) > 2048:
+        return JSONResponse(status_code=400, content={"error": "Ungültiger Seitentoken."})
+
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
-    url = "https://www.googleapis.com/youtube/v3/search?" + params
-    def fetch_results():
-        request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
-        with urlopen(request, timeout=12) as response:
+
+    per_page = max(1, min(int(max_results), 50))
+
+    def api_get(resource: str, request_params: dict):
+        params = dict(request_params)
+        params["key"] = api_key
+        url = "https://www.googleapis.com/youtube/v3/" + resource + "?" + urlencode(params)
+        request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
+        with urlopen(request, timeout=15) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def fetch_results():
+        if channel_id:
+            playlist_id = uploads_playlist_id
+            if not playlist_id:
+                channel_data = api_get("channels", {"part": "contentDetails", "id": channel_id})
+                channel_items = channel_data.get("items", [])
+                if not channel_items:
+                    raise ValueError("YouTube-Kanal wurde nicht gefunden oder ist nicht öffentlich.")
+                playlist_id = channel_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
+                if not playlist_id:
+                    raise ValueError("Für diesen Kanal wurde keine Uploads-Playlist gefunden.")
+
+            playlist_params = {"part": "snippet,contentDetails", "playlistId": playlist_id, "maxResults": per_page}
+            if page_token:
+                playlist_params["pageToken"] = page_token
+            result = api_get("playlistItems", playlist_params)
+            result["_asciline_uploads_playlist_id"] = playlist_id
+            return result
+
+        search_params = {"part": "snippet", "type": kind, "maxResults": per_page}
+        if query:
+            search_params["q"] = query
+        if page_token:
+            search_params["pageToken"] = page_token
+        if kind == "video":
+            search_params["regionCode"] = "DE"
+            search_params["relevanceLanguage"] = "de"
+        return api_get("search", search_params)
+
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
         for item in data.get("items", []):
-            video_id = item.get("id", {}).get("videoId")
+            item_id = item.get("id", {})
             snippet = item.get("snippet", {})
-            if not video_id:
-                continue
             thumbs = snippet.get("thumbnails", {})
             thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            results.append({"video_id":video_id, "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
-        return {"results":results}
+            published_at = snippet.get("publishedAt", "")
+
+            if kind == "channel":
+                result_channel_id = item_id.get("channelId")
+                if not result_channel_id:
+                    continue
+                title = snippet.get("title", "Unbekannter Kanal")
+                results.append({
+                    "result_type": "channel",
+                    "channel_id": result_channel_id,
+                    "title": title,
+                    "channel": title,
+                    "description": snippet.get("description", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": published_at,
+                })
+            else:
+                if channel_id:
+                    video_id = item.get("contentDetails", {}).get("videoId") or snippet.get("resourceId", {}).get("videoId")
+                else:
+                    video_id = item_id.get("videoId")
+                if not video_id:
+                    continue
+                results.append({
+                    "result_type": "video",
+                    "video_id": video_id,
+                    "channel_id": snippet.get("channelId", channel_id),
+                    "title": snippet.get("title", "Unbekanntes Video"),
+                    "channel": snippet.get("channelTitle", ""),
+                    "description": snippet.get("description", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": published_at,
+                })
+
+        page_info = data.get("pageInfo", {})
+        response_data = {
+            "results": results,
+            "next_page_token": data.get("nextPageToken", ""),
+            "total_results": page_info.get("totalResults", len(results)),
+            "results_per_page": page_info.get("resultsPerPage", len(results)),
+            "search_type": kind,
+        }
+        if channel_id:
+            response_data["uploads_playlist_id"] = data.get("_asciline_uploads_playlist_id", uploads_playlist_id)
+        return response_data
     except HTTPError as exc:
         try:
             details = json.loads(exc.read().decode("utf-8"))
@@ -157,11 +255,15 @@ async def api_search(q: str = ""):
             api_message = ""
         log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
         if exc.code == 403:
-            return JSONResponse(status_code=502, content={"error":"YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
-        return JSONResponse(status_code=502, content={"error":"Fehler bei der YouTube-Suche."})
+            return JSONResponse(status_code=502, content={"error": "YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
+        if exc.code == 400 and page_token:
+            return JSONResponse(status_code=400, content={"error": "Diese Ergebnisseite ist nicht mehr verfügbar. Bitte suche erneut."})
+        return JSONResponse(status_code=502, content={"error": "Fehler bei der YouTube-Suche."})
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         log.warning("YouTube search request failed: %s", exc)
-        return JSONResponse(status_code=502, content={"error":"YouTube ist momentan nicht erreichbar."})
+        if isinstance(exc, ValueError) and (str(exc).startswith("YouTube-Kanal") or str(exc).startswith("Für diesen Kanal")):
+            return JSONResponse(status_code=404, content={"error": str(exc)})
+        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
 
 
 @app.get("/")
