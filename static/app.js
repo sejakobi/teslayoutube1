@@ -1238,8 +1238,11 @@ const watchParams = new URLSearchParams(window.location.search);
 const initialWatchQuery = (
     watchParams.get('v') ||
     watchParams.get('video') ||
+    watchParams.get('videoId') ||
     watchParams.get('video_id') ||
     watchParams.get('id') ||
+    watchParams.get('url') ||
+    watchParams.get('src') ||
     watchParams.get('q') ||
     watchParams.get('query') ||
     ''
@@ -1254,14 +1257,17 @@ if (initialWatchQuery) {
 }
 
 if (watchStartButton) {
-    watchStartButton.addEventListener('click', () => {
-        const query = queryInput.value.trim();
-        if (query) {
-            watchStartButton.classList.add('hidden');
-            void doPlay();
-        } else {
-            queryInput.focus();
+    watchStartButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const query = (queryInput.value || '').trim();
+        if (!query) {
+            const errorEl = document.getElementById('watch-error');
+            if (errorEl) errorEl.textContent = 'Kein Video übergeben. Bitte watch.html?v=VIDEO_ID öffnen.';
+            return;
         }
+        watchStartButton.classList.add('hidden');
+        void doPlay();
     });
 }
 
