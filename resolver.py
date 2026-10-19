@@ -207,7 +207,19 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
         raise
 
     except yt_dlp.utils.DownloadError as exc:
-        raise ResolverError(str(exc)) from exc
+        # A 429 is a server-side rate limit. Do not retry through another
+        # search path or hide it behind a generic extraction error.
+        message = str(exc)
+        if "429" in message or "too many requests" in message.lower():
+            raise ResolverError(
+                "YouTube begrenzt momentan die Anfragen dieses Servers (HTTP 429). "
+                "Weitere automatische Versuche wurden nicht gestartet. Warte, bevor "
+                "du es erneut versuchst, und prüfe die yt-dlp-Version sowie die "
+                "Gültigkeit der konfigurierten Cookies. Wenn der Fehler bestehen "
+                "bleibt, kann die Drosselung an der Render-IP liegen; das lässt sich "
+                "nicht zuverlässig durch Änderungen an den Wiederholungsversuchen beheben."
+            ) from exc
+        raise ResolverError(message) from exc
 
     except Exception as exc:
         raise ResolverError(
