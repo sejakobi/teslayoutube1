@@ -15,7 +15,6 @@
     :root {
       color-scheme: light dark;
       
-      /* HELL-MODUS (Default System Light) */
       --bg: #f8f9fa;
       --bg-player: #0a0a0c;
       --surface-glass: rgba(255, 255, 255, 0.75);
@@ -29,7 +28,6 @@
       --text-primary: #0f0f0f;
       --text-secondary: #606060;
       
-      /* YOUTUBE RED AKZENTE */
       --yt-red: #ff0000;
       --yt-red-hover: #cc0000;
       --yt-red-glow: rgba(255, 0, 0, 0.25);
@@ -47,7 +45,6 @@
       --transition: all 0.4s var(--ease-apple);
     }
 
-    /* DUNKEL-MODUS (AUTOMATISCH GEWÄHLT VOM SYSTEM) */
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #0f0f12;
@@ -68,9 +65,7 @@
       }
     }
 
-    /* =========================================================
-       KINOMODUS (KOMPLETT RADIKALES PIANO-SCHWARZ)
-       ========================================================= */
+    /* KINOMODUS (KOMPLETT SCHWARZ) */
     html.cinema-mode,
     body.cinema-mode {
       background: #000000 !important;
@@ -97,7 +92,6 @@
     }
 
     body.cinema-mode #topbar,
-    body.cinema-mode #subbar,
     body.cinema-mode #statusbar {
       background: #000000 !important;
       opacity: 0.35;
@@ -106,7 +100,6 @@
     }
 
     body.cinema-mode #topbar:hover,
-    body.cinema-mode #subbar:hover,
     body.cinema-mode #statusbar:hover {
       opacity: 1;
     }
@@ -127,9 +120,7 @@
     button { -webkit-tap-highlight-color: transparent; }
     .hidden { display: none !important; }
 
-    /* =========================================================
-       1. NORDLICHT / AURORA INTRO OVERLAY (NETFLIX-STYLE)
-       ========================================================= */
+    /* NORDLICHT / AURORA INTRO OVERLAY */
     #cyber-intro {
       position: fixed;
       inset: 0;
@@ -150,7 +141,6 @@
       pointer-events: none;
     }
 
-    /* Nordlicht Beams */
     .aurora-container {
       position: absolute;
       inset: -50%;
@@ -228,9 +218,7 @@
       text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
     }
 
-    /* =========================================================
-       2. TOPBAR & EINSTELLUNGEN POPUP
-       ========================================================= */
+    /* TOPBAR & POPUP */
     #topbar {
       display: flex;
       align-items: center;
@@ -276,6 +264,24 @@
       box-shadow: 0 4px 12px var(--yt-red-glow);
     }
 
+    /* ELEGANTE VIDEO-TITEL ANZEIGE IN DER TOPBAR */
+    #topbar-video-title {
+      flex: 1;
+      max-width: 380px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      background: var(--surface-card);
+      padding: 8px 16px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+
+    /* SETTINGS POPUP (DROPDOWN) */
     .settings-container {
       position: relative;
     }
@@ -284,7 +290,7 @@
       position: absolute;
       top: 54px;
       right: 0;
-      width: 260px;
+      width: 290px;
       background: var(--surface-glass-solid);
       backdrop-filter: blur(40px);
       -webkit-backdrop-filter: blur(40px);
@@ -295,7 +301,7 @@
       z-index: 200;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 16px;
       animation: menuPop 0.3s var(--ease-bounce);
     }
 
@@ -304,13 +310,18 @@
       100% { opacity: 1; transform: scale(1) translateY(0); }
     }
 
+    .settings-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .settings-header {
       font-size: 11px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-secondary);
-      margin-bottom: 2px;
     }
 
     .settings-option-group {
@@ -319,18 +330,34 @@
       padding: 3px;
       border-radius: var(--radius-md);
       border: 1px solid var(--border);
+      gap: 4px;
     }
 
-    /* =========================================================
-       3. VERTIKAL & HORIZONTAL ZENTRIERTE SUCHLEISTE
-       ========================================================= */
+    .settings-action-row {
+      display: flex;
+      gap: 8px;
+    }
+    .settings-action-row .btn { flex: 1; }
+
+    .settings-tech-info {
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--surface-card);
+      padding: 8px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* SUCHLEISTE ZENTRIERT */
     #search-box-wrapper {
       transition: var(--transition);
       z-index: 150;
     }
 
     body.search-centered #player-container,
-    body.search-centered #subbar,
     body.search-centered #statusbar {
       filter: blur(18px) brightness(0.7);
       transition: filter 0.5s var(--ease-apple);
@@ -361,7 +388,7 @@
     body:not(.search-centered) #search-box-wrapper {
       position: relative;
       top: 0; left: 0; transform: none;
-      flex: 1; max-width: 560px;
+      flex: 1; max-width: 520px;
       background: transparent; padding: 0; border: none; box-shadow: none;
       animation: none;
     }
@@ -404,8 +431,8 @@
     .btn-actions { display: flex; align-items: center; gap: 10px; }
 
     .btn {
-      min-height: 44px;
-      padding: 0 20px;
+      min-height: 40px;
+      padding: 0 16px;
       border-radius: var(--radius-lg);
       border: 1px solid var(--border);
       cursor: pointer;
@@ -458,66 +485,25 @@
       box-shadow: 0 10px 25px var(--yt-red-glow);
     }
 
-    #btn-cinema.active {
-      background: rgba(255, 255, 255, 0.1);
-      border-color: var(--text-primary);
-      color: #ffffff;
-    }
-
-    /* =========================================================
-       4. SUBBAR / STEUERUNG BAR
-       ========================================================= */
-    #subbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 12px;
-      padding: 10px 28px;
-      border-bottom: 1px solid var(--border);
-      background: var(--surface-glass);
-      backdrop-filter: blur(20px);
-      transition: filter 0.5s var(--ease-apple);
-    }
-
-    #preset-group, #volume-group, .subbar-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .subbar-label {
-      color: var(--text-secondary);
-      font-size: 11px;
-      font-weight: 600;
-      margin-right: 4px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
     .preset-btn, .display-mode-btn, .icon-btn {
       border: 1px solid var(--border);
       background: var(--surface-card);
       color: var(--text-secondary);
       border-radius: var(--radius-md);
       min-height: 34px;
-      padding: 4px 14px;
+      padding: 4px 12px;
       cursor: pointer;
       font-size: 12px;
       font-weight: 600;
       transition: transform 0.2s var(--ease-bounce), background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
     }
 
-    .display-mode-btn { flex: 1; text-align: center; }
+    .display-mode-btn, .preset-btn { flex: 1; text-align: center; }
 
     .preset-btn:hover, .display-mode-btn:hover, .icon-btn:hover {
       color: var(--text-primary);
       background: var(--surface-card-hover);
       transform: translateY(-1px);
-    }
-
-    .preset-btn:active, .display-mode-btn:active, .icon-btn:active {
-      transform: scale(0.93);
     }
 
     .preset-btn.active, .display-mode-btn.active {
@@ -528,11 +514,9 @@
     }
 
     .icon-btn { min-width: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
-    #volume-slider { accent-color: var(--yt-red); cursor: pointer; width: 90px; }
+    #volume-slider { accent-color: var(--yt-red); cursor: pointer; width: 100%; }
 
-    /* =========================================================
-       5. YOUTUBE STYLE SEARCH PANEL
-       ========================================================= */
+    /* SEARCH PANEL */
     #search-panel {
       padding: 24px 28px;
       background: var(--surface-glass-solid);
@@ -557,26 +541,10 @@
       transform: translateY(-3px) scale(1.02);
       box-shadow: var(--shadow-liquid);
     }
-    .search-result:active {
-      transform: scale(0.96);
-    }
-
-    .search-result.selecting {
-      animation: selectZoom 0.5s var(--ease-apple) forwards;
-      z-index: 200;
-    }
-
-    @keyframes selectZoom {
-      0% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.08); opacity: 0.9; box-shadow: 0 20px 50px var(--yt-red-glow); }
-      100% { transform: scale(1.15); opacity: 0; }
-    }
 
     .search-thumbnail { width: 120px; aspect-ratio: 16/9; object-fit: cover; border-radius: var(--radius-sm); }
 
-    /* =========================================================
-       6. PLAYER CONTAINER
-       ========================================================= */
+    /* PLAYER CONTAINER */
     #player-container {
       position: relative;
       width: 100%;
@@ -589,15 +557,6 @@
       justify-content: center;
       overflow: hidden;
       transition: filter 0.5s var(--ease-apple), transform 0.6s var(--ease-apple);
-    }
-
-    #player-container.expanding {
-      animation: playerExpand 0.6s var(--ease-apple) forwards;
-    }
-
-    @keyframes playerExpand {
-      0% { transform: scale(0.96); opacity: 0.8; }
-      100% { transform: scale(1); opacity: 1; }
     }
 
     #ascii-player {
@@ -657,7 +616,7 @@
       pointer-events: none;
     }
 
-    /* TOUCH-OPTIMIERTE PLAYBACK CONTROLS */
+    /* AUTOMATISCH FADING PLAYBACK CONTROLS */
     .playback-controls {
       position: absolute;
       bottom: 24px;
@@ -674,6 +633,16 @@
       border-radius: 40px;
       z-index: 40;
       box-shadow: var(--shadow-floating);
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.5s var(--ease-apple), visibility 0.5s var(--ease-apple), transform 0.5s var(--ease-apple);
+    }
+
+    .playback-controls.auto-hide {
+      opacity: 0;
+      visibility: hidden;
+      transform: translateX(-50%) translateY(10px);
+      pointer-events: none;
     }
 
     .playback-pause {
@@ -723,14 +692,13 @@
       #topbar { padding: 14px 16px; }
       .search-input-group { flex-direction: column; }
       #query-input, .btn { width: 100%; }
-      #subbar { padding: 10px 16px; }
       .playback-pause { width: 52px; height: 52px; min-width: 52px; font-size: 18px; }
     }
   </style>
 </head>
 <body class="search-centered">
 
-  <!-- 1. NORDLICHT / AURORA INTRO OVERLAY -->
+  <!-- 1. NORDLICHT INTRO -->
   <div id="cyber-intro" onclick="closeIntro()">
     <div class="aurora-container">
       <div class="aurora-beam"></div>
@@ -743,9 +711,13 @@
     </div>
   </div>
 
-  <!-- 2. TOPBAR HEADER MIT SETTINGS ICON & POPUP -->
+  <!-- 2. TOPBAR HEADER -->
   <header id="topbar">
-    <div id="brand" onclick="document.body.classList.add('search-centered')">Cyber.cinema</div>
+    <!-- KLICK AUF NAMEN / LOGO SCHALTET KINOMODUS EIN/AUS -->
+    <div id="brand" onclick="toggleCinemaMode()" title="Kinomodus umschalten">Cyber.cinema</div>
+
+    <!-- HÜBSCHE TITELANZEIGE FÜR DAS AKTUELL GELADENE VIDEO -->
+    <div id="topbar-video-title" class="hidden">Kein Video geladen</div>
 
     <!-- DYNAMISCHE SUCHLEISTE -->
     <div id="search-box-wrapper">
@@ -756,36 +728,64 @@
     </div>
 
     <div class="btn-actions">
-      <button id="btn-play" class="btn btn-primary" aria-label="Play"><span class="btn-icon">▶</span><span class="btn-label">Play</span></button>
-      <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled><span class="btn-icon">■</span><span class="btn-label">Stop</span></button>
-      
-      <!-- SETTINGS BUTTON & DROPDOWN POPUP -->
+      <!-- EINSTELLUNGEN BUTTON & ALL-IN-ONE POPUP -->
       <div class="settings-container">
         <button id="btn-settings" class="btn btn-secondary icon-btn" type="button" aria-label="Einstellungen" title="Einstellungen">⚙️</button>
+        
         <div id="settings-menu" class="settings-menu hidden">
-          <div class="settings-header">Darstellungsmodus</div>
-          <div id="display-mode-group" class="settings-option-group" role="group" aria-label="Darstellungsmodus">
-            <button class="display-mode-btn" data-display-mode="ascii" type="button">ASCII</button>
-            <button class="display-mode-btn active" data-display-mode="canvas" type="button">Canvas</button>
+          <!-- PLAY / STOP CONTROLS -->
+          <div class="settings-section">
+            <div class="settings-header">Steuerung</div>
+            <div class="settings-action-row">
+              <button id="btn-play" class="btn btn-primary" aria-label="Play"><span class="btn-icon">▶</span><span class="btn-label">Play</span></button>
+              <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled><span class="btn-icon">■</span><span class="btn-label">Stop</span></button>
+            </div>
+          </div>
+
+          <!-- DARSTELLUNGSMODUS -->
+          <div class="settings-section">
+            <div class="settings-header">Darstellungsmodus</div>
+            <div id="display-mode-group" class="settings-option-group" role="group" aria-label="Darstellungsmodus">
+              <button class="display-mode-btn" data-display-mode="ascii" type="button">ASCII</button>
+              <button class="display-mode-btn active" data-display-mode="canvas" type="button">Canvas</button>
+            </div>
+          </div>
+
+          <!-- QUALITÄT PRESETS -->
+          <div class="settings-section">
+            <div class="settings-header">Qualität</div>
+            <div id="preset-group" class="settings-option-group" role="group" aria-label="Qualität">
+              <button class="preset-btn active" data-preset="low">Low</button>
+              <button class="preset-btn" data-preset="med">Med</button>
+              <button class="preset-btn" data-preset="high">High</button>
+            </div>
+            <div id="preset-hint" class="subbar-hint hidden" style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Änderungen greifen beim nächsten Play</div>
+          </div>
+
+          <!-- LAUTSTÄRKE -->
+          <div class="settings-section">
+            <div class="settings-header">Lautstärke</div>
+            <div id="volume-group" style="display:flex; align-items:center; gap:8px;">
+              <button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button>
+              <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+            </div>
+          </div>
+
+          <!-- TECHNISCHE DETAILS STATUS -->
+          <div class="settings-section">
+            <div class="settings-header">System Details</div>
+            <div class="settings-tech-info">
+              <div><span>Status: </span><strong id="popup-status-state">IDLE</strong></div>
+              <div><span>FPS: </span><strong id="popup-status-fps">-</strong></div>
+              <div id="popup-status-perf-hint" class="hidden" style="color:var(--yt-red);">↓ Niedrigeres Preset wählen</div>
+            </div>
           </div>
         </div>
       </div>
     </div>
   </header>
 
-  <!-- 3. CONTROL SUBBAR MIT KINOMODUS BUTTON -->
-  <div id="subbar">
-    <div id="preset-group" role="group" aria-label="Qualität"><span class="subbar-label">Qualität</span><button class="preset-btn active" data-preset="low">Low</button><button class="preset-btn" data-preset="med">Med</button><button class="preset-btn" data-preset="high">High</button></div>
-    <div id="preset-hint" class="subbar-hint hidden">Änderungen werden beim nächsten Play übernommen</div>
-    
-    <div class="subbar-actions">
-      <!-- KINOMODUS BUTTON -->
-      <button id="btn-cinema" class="preset-btn" type="button" title="Kinomodus umschalten">🎬 Kinomodus</button>
-      <div id="volume-group"><span class="subbar-label">Lautstärke</span><button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button><input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
-    </div>
-  </div>
-
-  <!-- 4. SEARCH RESULTS PANEL -->
+  <!-- SEARCH RESULTS PANEL -->
   <section id="search-panel" class="hidden" aria-label="YouTube-Suchergebnisse">
     <div class="search-panel-top">
       <div id="search-heading">Suchergebnisse</div>
@@ -795,13 +795,13 @@
     <div id="search-results"></div>
   </section>
 
-  <!-- 5. KINO PLAYER CONTAINER WITH ALL ORIGINAL HTML NODES -->
+  <!-- KINO PLAYER CONTAINER -->
   <main id="player-container">
     <pre id="ascii-player"></pre>
     <canvas id="ascii-canvas"></canvas>
     <video id="canvas-source" playsinline preload="auto" aria-hidden="true"></video>
 
-    <!-- CLEAN LADEANIMATION MIT ROTEM SPINNER -->
+    <!-- LADEANIMATION -->
     <div id="buffer-overlay" class="hidden">
       <div class="loader-spinner"></div>
       <div class="loader-text" id="buffer-text">Video wird geladen…</div>
@@ -810,7 +810,7 @@
     <!-- IDLE SCREEN -->
     <div id="idle-overlay"></div>
 
-    <!-- TOUCH-OPTIMIERTE PLAYBACK CONTROLS -->
+    <!-- AUTOMATISCH FADING PLAYBACK CONTROLS -->
     <div id="playback-controls" class="playback-controls hidden" aria-label="Videosteuerung">
       <button id="btn-pause" class="playback-pause" type="button" aria-label="Pause" title="Pause">Ⅱ</button>
       <span id="playback-current-time" class="playback-time">0:00</span>
@@ -820,12 +820,12 @@
     </div>
   </main>
 
-  <!-- 6. STATUSBAR -->
+  <!-- STATUSBAR -->
   <footer id="statusbar">
     <span id="status-title" class="status-segment">powered by ODIP.net</span>
     <span id="status-live" class="live-badge hidden">● LIVE</span>
-    <span id="status-state" class="status-segment status-state">IDLE</span>
-    <span id="status-fps" class="status-segment status-fps"></span>
+    <span id="status-state" class="status-segment status-state hidden">IDLE</span>
+    <span id="status-fps" class="status-segment status-fps hidden"></span>
     <span id="status-perf-hint" class="status-segment status-perf hidden">↓ try a lower preset</span>
   </footer>
 
@@ -840,8 +840,12 @@
       }
     }
 
+    function toggleCinemaMode() {
+      document.documentElement.classList.toggle('cinema-mode');
+      document.body.classList.toggle('cinema-mode');
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
-      // Auto Fadeout Intro
       setTimeout(closeIntro, 2500);
 
       const input = document.getElementById('query-input');
@@ -850,20 +854,18 @@
       const bufferOverlay = document.getElementById('buffer-overlay');
       const bufferText = document.getElementById('buffer-text');
       const statusState = document.getElementById('status-state');
-      const searchResults = document.getElementById('search-results');
+      const statusTitle = document.getElementById('status-title');
+      const statusFps = document.getElementById('status-fps');
+      const statusPerfHint = document.getElementById('status-perf-hint');
+      const topbarVideoTitle = document.getElementById('topbar-video-title');
+      const playbackControls = document.getElementById('playback-controls');
       const playerContainer = document.getElementById('player-container');
       
-      // Kinomodus Button Logik (Funktioniert für body + html)
-      const btnCinema = document.getElementById('btn-cinema');
-      if (btnCinema) {
-        btnCinema.addEventListener('click', () => {
-          document.documentElement.classList.toggle('cinema-mode');
-          document.body.classList.toggle('cinema-mode');
-          btnCinema.classList.toggle('active');
-        });
-      }
+      const popupStatusState = document.getElementById('popup-status-state');
+      const popupStatusFps = document.getElementById('popup-status-fps');
+      const popupStatusPerfHint = document.getElementById('popup-status-perf-hint');
 
-      // Settings Popover Logik
+      // Settings Popover Toggle
       const btnSettings = document.getElementById('btn-settings');
       const settingsMenu = document.getElementById('settings-menu');
 
@@ -880,6 +882,7 @@
         });
       }
 
+      // Suchleisten-Verschiebung
       function triggerSearchMove() {
         if (document.body.classList.contains('search-centered')) {
           document.body.classList.remove('search-centered');
@@ -900,21 +903,23 @@
         });
       }
 
-      // Klick auf ein Suchergebnis -> Zoom-Animation & Player-Vergrößerung
-      if (searchResults) {
-        searchResults.addEventListener('click', (e) => {
-          const card = e.target.closest('.search-result');
-          if (card) {
-            card.classList.add('selecting');
-            playerContainer.classList.add('expanding');
-            setTimeout(() => {
-              playerContainer.classList.remove('expanding');
-            }, 600);
+      // AUTOMATISCHES AUSBLENDEN DER PLAYBACK CONTROLS NACH UNTÄTIGKEIT
+      let controlsTimeout;
+      function resetControlsTimer() {
+        playbackControls.classList.remove('auto-hide');
+        clearTimeout(controlsTimeout);
+        controlsTimeout = setTimeout(() => {
+          if (!playbackControls.classList.contains('hidden')) {
+            playbackControls.classList.add('auto-hide');
           }
-        });
+        }, 3000);
       }
 
-      // Status Observer für Buffer-Zustände
+      playerContainer.addEventListener('mousemove', resetControlsTimer);
+      playerContainer.addEventListener('touchstart', resetControlsTimer);
+      playbackControls.addEventListener('mousemove', resetControlsTimer);
+
+      // STATUS-OBSERVER FÜR POPUP & TOPBAR TITEL ANPASSUNG
       const observer = new MutationObserver(() => {
         const state = statusState.textContent.toUpperCase();
         if (state.includes('RESOLVING') || state.includes('LOADING') || state.includes('BUFFERING')) {
@@ -923,10 +928,33 @@
         } else {
           bufferOverlay.classList.add('hidden');
         }
+
+        // Popup Status-Synchronisation
+        if (popupStatusState) popupStatusState.textContent = statusState.textContent || 'IDLE';
+        if (popupStatusFps) popupStatusFps.textContent = statusFps.textContent || '-';
+        if (popupStatusPerfHint) {
+          if (!statusPerfHint.classList.contains('hidden')) {
+            popupStatusPerfHint.classList.remove('hidden');
+          } else {
+            popupStatusPerfHint.classList.add('hidden');
+          }
+        }
+
+        // Titel in Topbar spiegeln
+        if (statusTitle && statusTitle.textContent && statusTitle.textContent !== 'powered by ODIP.net') {
+          topbarVideoTitle.textContent = statusTitle.textContent;
+          topbarVideoTitle.classList.remove('hidden');
+        }
       });
 
       if (statusState) {
         observer.observe(statusState, { childList: true, characterData: true, subtree: true });
+      }
+      if (statusTitle) {
+        observer.observe(statusTitle, { childList: true, characterData: true, subtree: true });
+      }
+      if (statusFps) {
+        observer.observe(statusFps, { childList: true, characterData: true, subtree: true });
       }
     });
   </script>
