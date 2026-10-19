@@ -111,8 +111,11 @@ def _ydl_opts(
         "extract_flat": False,
         "noplaylist": True,
         "socket_timeout": 30,
-        "retries": 2,
-        "extractor_retries": 2,
+       "retries": 1,
+"extractor_retries": 1,
+"sleep_interval_requests": 2,
+"sleep_interval": 5,
+"max_sleep_interval": 10,
         # Use the normal/current yt-dlp YouTube client selection instead of
         # hard-coding tv/web_safari/android, which can yield no player data.
         # The EJS scripts are included by the yt-dlp[default] extra.
