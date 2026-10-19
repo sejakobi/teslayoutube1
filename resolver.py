@@ -8,7 +8,7 @@ import binascii
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import yt_dlp
@@ -35,15 +35,24 @@ class ResolvedMedia:
     audio_url: Optional[str]
     video_id: str
     format_note: str
+    # HTTP headers yt-dlp associated with these exact signed stream URLs.
+    # They must be forwarded to ffmpeg for YouTube CDN requests to succeed.
+    video_headers: dict[str, str] = field(default_factory=dict)
+    audio_headers: dict[str, str] = field(default_factory=dict)
 
 
 def _ydl_opts(max_height: int, player_clients: list[str]) -> dict:
     """Build yt-dlp options for a specific YouTube player-client profile."""
 
+    # Prefer direct HTTPS streams. YouTube's HLS/m3u8 playlists are currently
+    # returning HTTP 403 for FFmpeg segment requests in this deployment.
+    # The ASCII renderer does not need high source resolution, so a direct
+    # progressive format is a suitable fallback when DASH/HLS is unavailable.
     fmt = (
-        f"bestvideo[height<={max_height}]+bestaudio"
-        f"/best[height<={max_height}]"
-        f"/best"
+        f"bestvideo[protocol=https][height<={max_height}]"
+        f"+bestaudio[protocol=https]"
+        f"/best[protocol=https][height<={max_height}]"
+        f"/best[protocol=https]"
     )
 
     return {
@@ -100,10 +109,14 @@ def _extract(url: str, max_height: int) -> dict:
         # YouTube has recently changed which player clients expose playable
         # formats. Try the current default clients first, then narrow profiles
         # if yt-dlp reports that the selected format is unavailable.
+        # Do not combine web_safari with the default client: that often makes
+        # yt-dlp prefer an HLS playlist. The format selector above also refuses
+        # m3u8/HLS protocols; these profiles are tried only when no HTTPS format
+        # is available for the preceding profile.
         client_profiles = (
-            ["default", "web_safari"],
             ["default"],
             ["android"],
+            ["tv"],
         )
         info = None
         last_download_error = None
@@ -189,8 +202,22 @@ def _extract(url: str, max_height: int) -> dict:
                 pass
 
 
-def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
-    """Return the video URL and an optional separate audio URL."""
+def _headers_for(fmt: Optional[dict], info: dict) -> dict[str, str]:
+    """Get non-secret request headers attached to a chosen yt-dlp format."""
+    raw = (fmt or {}).get("http_headers") or info.get("http_headers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if key is not None and value is not None and str(key).strip()
+    }
+
+
+def _pick_streams(
+    info: dict,
+) -> tuple[str, Optional[str], dict[str, str], dict[str, str]]:
+    """Return stream URLs and their matching HTTP headers."""
 
     requested = info.get("requested_formats")
 
@@ -202,7 +229,6 @@ def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
             ),
             None,
         )
-
         audio_fmt = next(
             (
                 item for item in requested
@@ -215,23 +241,37 @@ def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
         if video_fmt and audio_fmt:
             video_url = video_fmt.get("url")
             audio_url = audio_fmt.get("url")
-
             if video_url and audio_url:
-                return video_url, audio_url
+                return (
+                    video_url,
+                    audio_url,
+                    _headers_for(video_fmt, info),
+                    _headers_for(audio_fmt, info),
+                )
 
         if video_fmt and video_fmt.get("url"):
-            return video_fmt["url"], None
+            return (
+                video_fmt["url"],
+                None,
+                _headers_for(video_fmt, info),
+                {},
+            )
 
-    # A single selected format may already contain video and audio.
+    # A single selected format may already contain both video and audio.
     url = info.get("url")
-
     if not url:
         raise ResolverError(
             "yt-dlp returned no playable URL. The video may be unavailable "
             "or YouTube may have blocked stream extraction."
         )
 
-    return url, None
+    return url, None, _headers_for(info, info), {}
+
+
+def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
+    """Compatibility helper returning only URLs."""
+    video_url, audio_url, _, _ = _pick_streams(info)
+    return video_url, audio_url
 
 
 def _build_format_note(info: dict) -> str:
@@ -323,7 +363,7 @@ def resolve(
         else:
             raise
 
-    video_url, audio_url = _pick_urls(info)
+    video_url, audio_url, video_headers, audio_headers = _pick_streams(info)
 
     return ResolvedMedia(
         title=info.get("title") or "Unknown",
@@ -333,6 +373,8 @@ def resolve(
         audio_url=audio_url,
         video_id=info.get("id") or "",
         format_note=_build_format_note(info),
+        video_headers=video_headers,
+        audio_headers=audio_headers,
     )
 
 
