@@ -690,16 +690,14 @@ async function doPlay() {
         return;
     }
 
-    sessionId = data.session_id;
+  sessionId = data.session_id;
     appState  = 'playing';
     setUiState('playing');
     updateTitle(data.title, data.is_live);
-    if (selectedDisplayMode === 'canvas') {
-        idleOverlay.classList.add('hidden');
-        startNativeCanvasMedia(sessionId, data.canvas_width, data.canvas_height);
-    } else {
-        connectWs(sessionId);
-    }
+    
+    // Erzwingt immer den WebSocket-Stream (kein <video>-Element mehr nötig)
+    idleOverlay.classList.add('hidden');
+    connectWs(sessionId);
     startPoll();
 }
 
