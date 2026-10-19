@@ -50,6 +50,8 @@ let nativeLastMediaTime = -1;
 let nativeFpsCount = 0;
 let nativeFpsWindowStart = 0;
 let nativeRenderedFps = 0;
+let nativeSyncTimer = null;
+let nativeAudioSyncStartedAt = 0;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -355,6 +357,7 @@ function renderFrame(now) {
 // Canvas mode intentionally does not transfer individual JPEG frames. The
 // browser decodes one fragmented-MP4 stream and Canvas paints presented frames.
 function stopNativeCanvasSource() {
+    stopNativeAudioSync();
     nativeDrawLoopRunning = false;
     if (nativeDrawRaf !== null) {
         cancelAnimationFrame(nativeDrawRaf);
@@ -430,6 +433,53 @@ function ensureNativeCanvasDrawLoop() {
     }
 }
 
+function stopNativeAudioSync() {
+    if (nativeSyncTimer !== null) {
+        clearInterval(nativeSyncTimer);
+        nativeSyncTimer = null;
+    }
+    if (audioEl) audioEl.playbackRate = 1;
+}
+
+// The canvas video and audio are delivered by separate HTTP streams. Keep
+// their media clocks close while playing. Seeking is preferred when the
+// audio stream exposes a seekable range; otherwise a small rate correction
+// limits gradual drift without making audible jumps.
+function startNativeAudioSync() {
+    stopNativeAudioSync();
+    if (!canvasSource || !audioEl) return;
+    nativeAudioSyncStartedAt = performance.now();
+    nativeSyncTimer = setInterval(() => {
+        if (appState !== 'playing' || !canvasVideoMode || !canvasSource || !audioEl) {
+            stopNativeAudioSync();
+            return;
+        }
+        if (canvasSource.paused || audioEl.paused || !Number.isFinite(canvasSource.currentTime) || !Number.isFinite(audioEl.currentTime)) return;
+
+        const delta = audioEl.currentTime - canvasSource.currentTime; // positive = audio ahead
+        const absDelta = Math.abs(delta);
+        if (absDelta > 0.35 && audioEl.seekable && audioEl.seekable.length > 0) {
+            const start = audioEl.seekable.start(0);
+            const end = audioEl.seekable.end(audioEl.seekable.length - 1);
+            const target = Math.max(start, Math.min(end, canvasSource.currentTime));
+            try {
+                audioEl.currentTime = target;
+                audioEl.playbackRate = 1;
+                return;
+            } catch (_) { /* non-seekable live stream; use gentle rate correction below */ }
+        }
+
+        // Cap corrections to avoid audible pitch/time jumps. A difference
+        // under 80 ms is normal scheduling jitter and needs no correction.
+        if (absDelta < 0.08) {
+            audioEl.playbackRate = 1;
+        } else {
+            const correction = Math.max(-0.04, Math.min(0.04, delta * 0.08));
+            audioEl.playbackRate = Math.max(0.96, Math.min(1.04, 1 - correction));
+        }
+    }, 300);
+}
+
 function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     if (!canvasSource) {
         setError('Canvas-Videoelement fehlt. Bitte static/index.html prüfen.');
@@ -464,6 +514,7 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
         setStatus('PLAYING · CANVAS', 'playing');
         nativeFpsWindowStart = 0;
         ensureNativeCanvasDrawLoop();
+        startNativeAudioSync();
     };
     canvasSource.onwaiting = () => {
         if (appState === 'playing' && canvasVideoMode) {
