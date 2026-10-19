@@ -45,8 +45,13 @@ class ResolvedMedia:
 
 def _prepare_js_runtime() -> Optional[str]:
     """Expose the Deno runtime installed by render-build.sh to yt-dlp."""
+    # Render build and runtime environments do not always expose the same
+    # HOME/PATH. Prefer a project-local Deno install created by render-build.sh,
+    # then check the configured and conventional user install locations.
+    project_deno = Path(__file__).resolve().parent / ".deno" / "bin" / "deno"
     deno_install = Path(os.environ.get("DENO_INSTALL", str(Path.home() / ".deno")))
     candidates = [
+        project_deno,
         deno_install / "bin" / "deno",
         Path.home() / ".deno" / "bin" / "deno",
     ]
