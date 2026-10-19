@@ -72,21 +72,37 @@ def _prepare_js_runtime() -> Optional[str]:
     return str(deno_path)
 
 
-def _ydl_opts(max_height: int, deno_path: Optional[str] = None) -> dict:
-    """Build yt-dlp options with default YouTube clients and a JS runtime.
+def _ydl_opts(
+    max_height: int,
+    deno_path: Optional[str] = None,
+    prefer_native: bool = False,
+) -> dict:
+    """Build yt-dlp options for ASCII or native browser video playback.
 
-    Prefer direct HTTPS formats to avoid HLS segment 403s, but keep broad
-    fallbacks so videos that only expose other protocols are not rejected
-    with "Requested format is not available".
+    Native Canvas mode needs a browser-compatible MP4 stream. Prefer H.264
+    video + AAC audio (which FFmpeg can mux without re-encoding), then fall
+    back to a single progressive MP4 format. ASCII mode retains the existing
+    separate video/audio selection.
     """
-    fmt = (
-        f"bestvideo[protocol=https][height<={max_height}]"
-        f"+bestaudio[protocol=https]"
-        f"/best[protocol=https][height<={max_height}]"
-        f"/bestvideo[height<={max_height}]+bestaudio"
-        f"/best[height<={max_height}]"
-        "/best"
-    )
+    if prefer_native:
+        fmt = (
+            f"bestvideo[protocol=https][vcodec^=avc1][height<={max_height}]"
+            f"+bestaudio[protocol=https][acodec^=mp4a]"
+            f"/best[protocol=https][ext=mp4][height<={max_height}]"
+            f"/best[ext=mp4][height<={max_height}]"
+            f"/best[ext=mp4]"
+            f"/best[protocol=https][height<={max_height}]"
+            f"/best[height<={max_height}]"
+        )
+    else:
+        fmt = (
+            f"bestvideo[protocol=https][height<={max_height}]"
+            f"+bestaudio[protocol=https]"
+            f"/best[protocol=https][height<={max_height}]"
+            f"/bestvideo[height<={max_height}]+bestaudio"
+            f"/best[height<={max_height}]"
+            "/best"
+        )
 
     opts = {
         "format": fmt,
@@ -106,7 +122,7 @@ def _ydl_opts(max_height: int, deno_path: Optional[str] = None) -> dict:
     return opts
 
 
-def _extract(url: str, max_height: int) -> dict:
+def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
     """Extract video metadata and stream URLs using optional cookies."""
 
     cookie_path = None
@@ -144,7 +160,7 @@ def _extract(url: str, max_height: int) -> dict:
                 cookie_file.write(cookie_bytes)
                 cookie_path = cookie_file.name
 
-        opts = _ydl_opts(max_height, deno_path)
+        opts = _ydl_opts(max_height, deno_path, prefer_native)
         if cookie_path:
             opts["cookiefile"] = cookie_path
 
@@ -331,6 +347,8 @@ def _is_unavailable(err: ResolverError) -> bool:
 def resolve(
     query: str,
     max_height: int = 720,
+    *,
+    prefer_native: bool = False,
 ) -> ResolvedMedia:
     """Resolve a YouTube ID, URL, or search query."""
 
@@ -354,13 +372,14 @@ def resolve(
         is_id_attempt = False
 
     try:
-        info = _extract(yt_url, max_height)
+        info = _extract(yt_url, max_height, prefer_native)
 
     except ResolverError as exc:
         if is_id_attempt and _is_unavailable(exc):
             info = _extract(
                 f"ytsearch1:{query}",
                 max_height,
+                prefer_native,
             )
         else:
             raise
