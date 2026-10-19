@@ -80,8 +80,19 @@ class SessionManager:
             log.info("session %s: resolving %r preset=%s", session_id, query, preset_name)
 
         # Resolve outside the lock so a hammered Play can supersede us.
+        # Native Canvas playback uses browser-compatible H.264/AAC media and
+        # lets the browser decode frames; keep the existing ASCII selection.
+        requested_height = self._max_height
+        if session.display_mode == "canvas":
+            canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
+            requested_height = min(self._max_height, int(canvas_cfg["height"]))
         try:
-            media = await asyncio.to_thread(resolve, query, self._max_height)
+            media = await asyncio.to_thread(
+                resolve,
+                query,
+                requested_height,
+                prefer_native=(session.display_mode == "canvas"),
+            )
         except ResolverError as exc:
             async with self._lock:
                 if self._current is session:
@@ -94,41 +105,38 @@ class SessionManager:
                 log.info("session %s superseded during resolve — discarding", session_id)
                 return session
 
-            preset_cfg = PRESETS.get(preset_name) or PRESETS[DEFAULT_PRESET]
-            preset = PresetSpec(
-                cols=preset_cfg["cols"],
-                rows=preset_cfg["rows"],
-                fps_cap=preset_cfg["fps_cap"],
-                mode=preset_cfg["mode"],
-            )
+            pipeline = None
+            audio_pipeline = None
 
-            if session.display_mode == "canvas":
-                canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
-                pipeline = VideoPipeline(
-                    media.video_url,
-                    preset,
-                    headers=media.video_headers,
-                    display_mode="canvas",
-                    frame_width=canvas_cfg["width"],
-                    frame_height=canvas_cfg["height"],
-                    fps_cap=canvas_cfg["fps_cap"],
-                    jpeg_quality=canvas_cfg["jpeg_quality"],
+            if session.display_mode != "canvas":
+                preset_cfg = PRESETS.get(preset_name) or PRESETS[DEFAULT_PRESET]
+                preset = PresetSpec(
+                    cols=preset_cfg["cols"],
+                    rows=preset_cfg["rows"],
+                    fps_cap=preset_cfg["fps_cap"],
+                    mode=preset_cfg["mode"],
                 )
-            else:
                 pipeline = VideoPipeline(
                     media.video_url,
                     preset,
                     headers=media.video_headers,
                     display_mode="ascii",
                 )
-            pipeline.start()
+                pipeline.start()
 
-            # Audio: prefer the separate audio URL; fall back to the muxed
-            # video URL. Forward the headers belonging to that exact stream.
-            audio_src = media.audio_url if media.audio_url else media.video_url
-            audio_headers = media.audio_headers if media.audio_url else media.video_headers
-            audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
-            audio_pipeline.start()
+                # ASCII mode keeps its existing independent MP3 audio stream.
+                audio_src = media.audio_url if media.audio_url else media.video_url
+                audio_headers = media.audio_headers if media.audio_url else media.video_headers
+                audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
+                audio_pipeline.start()
+            else:
+                # In Canvas mode do not launch the per-frame JPEG/WebSocket
+                # pipeline. /media remuxes the selected streams for the browser
+                # and the browser's native decoder paints directly to Canvas.
+                log.info(
+                    "session %s: native Canvas selected max_height=%d format=%s",
+                    session_id, requested_height, media.format_note,
+                )
 
             session.media = media
             session.pipeline = pipeline
