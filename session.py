@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
 
-from config import PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
+from config import PRESETS, CANVAS_PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
 from pipeline import AudioPipeline, PresetSpec, VideoPipeline
 from resolver import ResolvedMedia, ResolverError, resolve
 
@@ -36,6 +36,7 @@ class Session:
     session_id: str
     query: str
     preset_name: str
+    display_mode: str = "ascii"
     state: State = State.RESOLVING
     error_msg: str = ""
     media: Optional[ResolvedMedia] = None
@@ -58,7 +59,7 @@ class SessionManager:
         self._current: Optional[Session] = None
         self._lock = asyncio.Lock()
 
-    async def play(self, query: str, preset_name: str) -> Session:
+    async def play(self, query: str, preset_name: str, display_mode: str = "ascii") -> Session:
         """Start a new session.
 
         Kills the previous session, resolves the query, starts the
@@ -73,6 +74,7 @@ class SessionManager:
                 session_id=session_id,
                 query=query,
                 preset_name=preset_name,
+                display_mode="canvas" if display_mode == "canvas" else "ascii",
             )
             self._current = session
             log.info("session %s: resolving %r preset=%s", session_id, query, preset_name)
@@ -100,11 +102,25 @@ class SessionManager:
                 mode=preset_cfg["mode"],
             )
 
-            pipeline = VideoPipeline(
-                media.video_url,
-                preset,
-                headers=media.video_headers,
-            )
+            if session.display_mode == "canvas":
+                canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
+                pipeline = VideoPipeline(
+                    media.video_url,
+                    preset,
+                    headers=media.video_headers,
+                    display_mode="canvas",
+                    frame_width=canvas_cfg["width"],
+                    frame_height=canvas_cfg["height"],
+                    fps_cap=canvas_cfg["fps_cap"],
+                    jpeg_quality=canvas_cfg["jpeg_quality"],
+                )
+            else:
+                pipeline = VideoPipeline(
+                    media.video_url,
+                    preset,
+                    headers=media.video_headers,
+                    display_mode="ascii",
+                )
             pipeline.start()
 
             # Audio: prefer the separate audio URL; fall back to the muxed
