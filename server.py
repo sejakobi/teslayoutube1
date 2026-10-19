@@ -182,7 +182,7 @@ async def audio_stream(request: Request):
 
     return StreamingResponse(
         audio_pipeline.chunks(),
-        media_type="audio/aac",
+        media_type="audio/mpeg",
         headers={
             "Cache-Control": "no-cache",
             "X-Content-Type-Options": "nosniff",
