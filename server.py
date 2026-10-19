@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -264,6 +265,50 @@ async def api_search(
         if isinstance(exc, ValueError) and (str(exc).startswith("YouTube-Kanal") or str(exc).startswith("Für diesen Kanal")):
             return JSONResponse(status_code=404, content={"error": str(exc)})
         return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
+
+
+@app.get("/api/video-info")
+async def api_video_info(video_id: str = ""):
+    """Return the public channel metadata for a video using YouTube Data API v3."""
+    video_id = (video_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
+        return JSONResponse(status_code=400, content={"error": "Ungültige Video-ID."})
+
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
+
+    def fetch_video_info():
+        params = urlencode({"part": "snippet", "id": video_id, "key": api_key})
+        url = "https://www.googleapis.com/youtube/v3/videos?" + params
+        request = UrlRequest(url, headers={"User-Agent": "CyberCinema/1.0"})
+        with urlopen(request, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        data = await asyncio.to_thread(fetch_video_info)
+        items = data.get("items", [])
+        if not items:
+            return JSONResponse(status_code=404, content={"error": "Für dieses Video wurden keine öffentlichen Kanaldaten gefunden."})
+        snippet = items[0].get("snippet", {})
+        channel_id = snippet.get("channelId", "")
+        channel_title = snippet.get("channelTitle", "YouTube-Kanal")
+        if not channel_id:
+            return JSONResponse(status_code=404, content={"error": "Für dieses Video wurde kein Kanal gefunden."})
+        return {"video_id": video_id, "channel_id": channel_id, "channel_title": channel_title}
+    except HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            api_message = details.get("error", {}).get("message", "")
+        except Exception:
+            api_message = ""
+        log.warning("YouTube video-info API HTTP %s: %s", exc.code, api_message)
+        if exc.code == 403:
+            return JSONResponse(status_code=502, content={"error": "YouTube-Metadaten nicht verfügbar. Prüfe API-Schlüssel und Kontingent."})
+        return JSONResponse(status_code=502, content={"error": "Fehler beim Abrufen der YouTube-Kanaldaten."})
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        log.warning("YouTube video-info request failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "YouTube-Kanaldaten sind momentan nicht erreichbar."})
 
 
 @app.get("/")
@@ -519,6 +564,7 @@ async def api_play(req: PlayRequest):
             "canvas_width": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["width"],
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
             "duration": session.media.duration,
+            "video_id": session.media.video_id,
         }
 
     # Superseded during resolve (rare race — another Play beat us).
