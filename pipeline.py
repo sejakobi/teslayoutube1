@@ -79,8 +79,10 @@ def _build_audio_ffmpeg_cmd(audio_url: str) -> list[str]:
         "-nostdin",
         "-i", audio_url,
         "-vn",
-        "-c:a", "aac",
-        "-f", "adts",
+        # MP3 is broadly supported by HTMLAudioElement across desktop browsers.
+        "-c:a", "libmp3lame",
+        "-b:a", "128k",
+        "-f", "mp3",
         "pipe:1",
     ]
 
