@@ -40,13 +40,12 @@ class ResolvedMedia:
 def _ydl_opts(max_height: int) -> dict:
     """Build yt-dlp options."""
 
-    fmt = (
-        f"bestvideo[height<={max_height}][ext=mp4]"
-        f"+bestaudio[ext=m4a]"
-        f"/bestvideo[height<={max_height}]+bestaudio"
+       fmt = (
+        f"bestvideo[height<={max_height}]+bestaudio"
         f"/best[height<={max_height}]"
         f"/best"
     )
+
 
     return {
         "format": fmt,
