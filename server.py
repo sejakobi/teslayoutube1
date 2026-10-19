@@ -13,9 +13,10 @@ import asyncio
 import json
 import logging
 import os
-import re
 import shutil
 import signal
+import secrets
+import time
 import subprocess
 import sys
 from contextlib import asynccontextmanager
@@ -56,6 +57,26 @@ log = logging.getLogger("server")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 PIN_PAGE = os.path.join(STATIC_DIR, "pin.html")
+
+# Short-lived opaque selections: YouTube IDs stay on the server, not in page URLs.
+_SELECTIONS: dict[str, tuple[str, float]] = {}
+_SELECTION_TTL = 30 * 60
+
+def _new_selection(video_id: str) -> str:
+    now = time.time()
+    for key, (_, expiry) in list(_SELECTIONS.items()):
+        if expiry < now:
+            _SELECTIONS.pop(key, None)
+    token = secrets.token_urlsafe(24)
+    _SELECTIONS[token] = (video_id, now + _SELECTION_TTL)
+    return token
+
+def _resolve_selection(token: str) -> str | None:
+    item = _SELECTIONS.get(token)
+    if not item or item[1] < time.time():
+        _SELECTIONS.pop(token, None)
+        return None
+    return "https://www.youtube.com/watch?v=" + item[0]
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -122,132 +143,34 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(
-    q: str = "",
-    search_type: str = "video",
-    page_token: str = "",
-    channel_id: str = "",
-    uploads_playlist_id: str = "",
-    order: str = "relevance",
-    max_results: int = 25,
-):
-    """Search videos/channels and page through all public channel uploads."""
+async def api_search(q: str = ""):
+    """Search YouTube videos via the server-side YouTube Data API v3."""
     query = q.strip()
-    kind = (search_type or "video").strip().lower()
-    channel_id = channel_id.strip()
-    uploads_playlist_id = uploads_playlist_id.strip()
-    page_token = page_token.strip()
-
-    if kind not in {"video", "channel"}:
-        return JSONResponse(status_code=400, content={"error": "Ungültiger Suchtyp."})
-    if channel_id:
-        # Channel browsing uses the channel's uploads playlist, not search relevance.
-        kind = "video"
-        if len(channel_id) > 200:
-            return JSONResponse(status_code=400, content={"error": "Die Kanal-ID ist ungültig."})
-    elif not query:
+    if not query:
         return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
     if len(query) > 200:
         return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
-    if len(page_token) > 2048:
-        return JSONResponse(status_code=400, content={"error": "Ungültiger Seitentoken."})
-
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-
-    per_page = max(1, min(int(max_results), 50))
-
-    def api_get(resource: str, request_params: dict):
-        params = dict(request_params)
-        params["key"] = api_key
-        url = "https://www.googleapis.com/youtube/v3/" + resource + "?" + urlencode(params)
-        request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
-        with urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode("utf-8"))
-
+    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
+    url = "https://www.googleapis.com/youtube/v3/search?" + params
     def fetch_results():
-        if channel_id:
-            playlist_id = uploads_playlist_id
-            if not playlist_id:
-                channel_data = api_get("channels", {"part": "contentDetails", "id": channel_id})
-                channel_items = channel_data.get("items", [])
-                if not channel_items:
-                    raise ValueError("YouTube-Kanal wurde nicht gefunden oder ist nicht öffentlich.")
-                playlist_id = channel_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
-                if not playlist_id:
-                    raise ValueError("Für diesen Kanal wurde keine Uploads-Playlist gefunden.")
-
-            playlist_params = {"part": "snippet,contentDetails", "playlistId": playlist_id, "maxResults": per_page}
-            if page_token:
-                playlist_params["pageToken"] = page_token
-            result = api_get("playlistItems", playlist_params)
-            result["_asciline_uploads_playlist_id"] = playlist_id
-            return result
-
-        search_params = {"part": "snippet", "type": kind, "maxResults": per_page}
-        if query:
-            search_params["q"] = query
-        if page_token:
-            search_params["pageToken"] = page_token
-        if kind == "video":
-            search_params["regionCode"] = "DE"
-            search_params["relevanceLanguage"] = "de"
-        return api_get("search", search_params)
-
+        request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
+        with urlopen(request, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
         for item in data.get("items", []):
-            item_id = item.get("id", {})
+            video_id = item.get("id", {}).get("videoId")
             snippet = item.get("snippet", {})
+            if not video_id:
+                continue
             thumbs = snippet.get("thumbnails", {})
             thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            published_at = snippet.get("publishedAt", "")
-
-            if kind == "channel":
-                result_channel_id = item_id.get("channelId")
-                if not result_channel_id:
-                    continue
-                title = snippet.get("title", "Unbekannter Kanal")
-                results.append({
-                    "result_type": "channel",
-                    "channel_id": result_channel_id,
-                    "title": title,
-                    "channel": title,
-                    "description": snippet.get("description", ""),
-                    "thumbnail": thumb.get("url", ""),
-                    "published_at": published_at,
-                })
-            else:
-                if channel_id:
-                    video_id = item.get("contentDetails", {}).get("videoId") or snippet.get("resourceId", {}).get("videoId")
-                else:
-                    video_id = item_id.get("videoId")
-                if not video_id:
-                    continue
-                results.append({
-                    "result_type": "video",
-                    "video_id": video_id,
-                    "channel_id": snippet.get("channelId", channel_id),
-                    "title": snippet.get("title", "Unbekanntes Video"),
-                    "channel": snippet.get("channelTitle", ""),
-                    "description": snippet.get("description", ""),
-                    "thumbnail": thumb.get("url", ""),
-                    "published_at": published_at,
-                })
-
-        page_info = data.get("pageInfo", {})
-        response_data = {
-            "results": results,
-            "next_page_token": data.get("nextPageToken", ""),
-            "total_results": page_info.get("totalResults", len(results)),
-            "results_per_page": page_info.get("resultsPerPage", len(results)),
-            "search_type": kind,
-        }
-        if channel_id:
-            response_data["uploads_playlist_id"] = data.get("_asciline_uploads_playlist_id", uploads_playlist_id)
-        return response_data
+            results.append({"selection":_new_selection(video_id), "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
+        return {"results":results}
     except HTTPError as exc:
         try:
             details = json.loads(exc.read().decode("utf-8"))
@@ -256,64 +179,20 @@ async def api_search(
             api_message = ""
         log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
         if exc.code == 403:
-            return JSONResponse(status_code=502, content={"error": "YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
-        if exc.code == 400 and page_token:
-            return JSONResponse(status_code=400, content={"error": "Diese Ergebnisseite ist nicht mehr verfügbar. Bitte suche erneut."})
-        return JSONResponse(status_code=502, content={"error": "Fehler bei der YouTube-Suche."})
+            return JSONResponse(status_code=502, content={"error":"YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
+        return JSONResponse(status_code=502, content={"error":"Fehler bei der YouTube-Suche."})
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         log.warning("YouTube search request failed: %s", exc)
-        if isinstance(exc, ValueError) and (str(exc).startswith("YouTube-Kanal") or str(exc).startswith("Für diesen Kanal")):
-            return JSONResponse(status_code=404, content={"error": str(exc)})
-        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
-
-
-@app.get("/api/video-info")
-async def api_video_info(video_id: str = ""):
-    """Return the public channel metadata for a video using YouTube Data API v3."""
-    video_id = (video_id or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
-        return JSONResponse(status_code=400, content={"error": "Ungültige Video-ID."})
-
-    api_key = os.environ.get("YOUTUBE_API_KEY")
-    if not api_key:
-        return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-
-    def fetch_video_info():
-        params = urlencode({"part": "snippet", "id": video_id, "key": api_key})
-        url = "https://www.googleapis.com/youtube/v3/videos?" + params
-        request = UrlRequest(url, headers={"User-Agent": "CyberCinema/1.0"})
-        with urlopen(request, timeout=12) as response:
-            return json.loads(response.read().decode("utf-8"))
-
-    try:
-        data = await asyncio.to_thread(fetch_video_info)
-        items = data.get("items", [])
-        if not items:
-            return JSONResponse(status_code=404, content={"error": "Für dieses Video wurden keine öffentlichen Kanaldaten gefunden."})
-        snippet = items[0].get("snippet", {})
-        channel_id = snippet.get("channelId", "")
-        channel_title = snippet.get("channelTitle", "YouTube-Kanal")
-        if not channel_id:
-            return JSONResponse(status_code=404, content={"error": "Für dieses Video wurde kein Kanal gefunden."})
-        return {"video_id": video_id, "channel_id": channel_id, "channel_title": channel_title}
-    except HTTPError as exc:
-        try:
-            details = json.loads(exc.read().decode("utf-8"))
-            api_message = details.get("error", {}).get("message", "")
-        except Exception:
-            api_message = ""
-        log.warning("YouTube video-info API HTTP %s: %s", exc.code, api_message)
-        if exc.code == 403:
-            return JSONResponse(status_code=502, content={"error": "YouTube-Metadaten nicht verfügbar. Prüfe API-Schlüssel und Kontingent."})
-        return JSONResponse(status_code=502, content={"error": "Fehler beim Abrufen der YouTube-Kanaldaten."})
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
-        log.warning("YouTube video-info request failed: %s", exc)
-        return JSONResponse(status_code=502, content={"error": "YouTube-Kanaldaten sind momentan nicht erreichbar."})
+        return JSONResponse(status_code=502, content={"error":"YouTube ist momentan nicht erreichbar."})
 
 
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+@app.get("/watch")
+async def watch_page():
+    return FileResponse(os.path.join(STATIC_DIR, "watch.html"))
 
 
 @app.get("/audio")
@@ -338,7 +217,7 @@ async def audio_stream(request: Request):
     )
 
 
-def _native_mp4_command(session: Session, start_seconds: float = 0.0) -> list[str]:
+def _native_mp4_command(session: Session) -> list[str]:
     """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
 
     No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
@@ -349,24 +228,16 @@ def _native_mp4_command(session: Session, start_seconds: float = 0.0) -> list[st
     if media is None:
         raise ValueError("media is not ready")
 
-    # Seeking restarts this one-shot stream at a new input position.  The
-    # browser stream itself is intentionally non-range/streaming; the progress
-    # slider requests a fresh FFmpeg process at the chosen media timestamp.
-    start_seconds = max(0.0, float(start_seconds or 0.0))
-    video_seek_args = ["-ss", f"{start_seconds:.3f}"] if start_seconds > 0 else []
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
         *_ffmpeg_input_header_args(media.video_headers),
-        *video_seek_args,
         "-i", media.video_url,
     ]
     if media.audio_url:
-        audio_seek_args = ["-ss", f"{start_seconds:.3f}"] if start_seconds > 0 else []
         cmd.extend([
             "-thread_queue_size", "512",
             *_ffmpeg_input_header_args(media.audio_headers),
-            *audio_seek_args,
             "-i", media.audio_url,
             "-map", "0:v:0", "-map", "1:a:0",
         ])
@@ -450,23 +321,14 @@ async def native_canvas_media(request: Request):
     session_id = request.query_params.get("session")
     if not session_id:
         return Response(status_code=400, content="missing session id")
-    try:
-        start_seconds = max(0.0, float(request.query_params.get("start", "0")))
-    except (TypeError, ValueError):
-        return Response(status_code=400, content="invalid start time")
     session = get_manager().get(session_id)
     if session is None or session.media is None:
         return Response(status_code=404, content="unknown or stale session id")
     if session.display_mode != "canvas":
         return Response(status_code=409, content="native media is only available in Canvas mode")
 
-    if session.media.is_live:
-        start_seconds = 0.0
-    elif session.media.duration and session.media.duration > 0:
-        start_seconds = min(start_seconds, max(0.0, float(session.media.duration) - 0.5))
-
     try:
-        command = _native_mp4_command(session, start_seconds)
+        command = _native_mp4_command(session)
         proc = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -532,22 +394,26 @@ async def api_auth(req: AuthRequest, request: Request):
 
 
 class PlayRequest(BaseModel):
-    query: str
+    query: str | None = None
+    selection: str | None = None
     preset: str = DEFAULT_PRESET
-    display_mode: str = "ascii"
+    display_mode: str = "canvas"
 
 
 @app.post("/api/play")
 async def api_play(req: PlayRequest):
     preset_name = req.preset if req.preset in PRESETS else DEFAULT_PRESET
     display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "ascii"
+    query = _resolve_selection(req.selection or "") if req.selection else (req.query or "").strip()
+    if not query:
+        return JSONResponse(status_code=400, content={"error": "Die Auswahl ist ungültig oder abgelaufen. Bitte suche das Video erneut."})
     mgr = get_manager()
     try:
-        session = await mgr.play(req.query, preset_name, display_mode)
+        session = await mgr.play(query, preset_name, display_mode)
     except ResolverError as exc:
         return JSONResponse(
             status_code=422,
-            content={"error": str(exc), "query": req.query},
+            content={"error": str(exc)},
         )
 
     if session.state == State.PLAYING and session.media is not None:
@@ -563,8 +429,6 @@ async def api_play(req: PlayRequest):
             "display_mode": session.display_mode,
             "canvas_width": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["width"],
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
-            "duration": session.media.duration,
-            "video_id": session.media.video_id,
         }
 
     # Superseded during resolve (rare race — another Play beat us).
