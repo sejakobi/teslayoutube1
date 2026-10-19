@@ -111,11 +111,11 @@ def _ydl_opts(
         "extract_flat": False,
         "noplaylist": True,
         "socket_timeout": 30,
-       "retries": 1,
-"extractor_retries": 1,
-"sleep_interval_requests": 2,
-"sleep_interval": 5,
-"max_sleep_interval": 10,
+        "retries": 1,
+        "extractor_retries": 1,
+        "sleep_interval_requests": 2,
+        "sleep_interval": 5,
+        "max_sleep_interval": 10,
         # Use the normal/current yt-dlp YouTube client selection instead of
         # hard-coding tv/web_safari/android, which can yield no player data.
         # The EJS scripts are included by the yt-dlp[default] extra.
@@ -162,6 +162,36 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
             ) as cookie_file:
                 cookie_file.write(cookie_bytes)
                 cookie_path = cookie_file.name
+
+            # Safe diagnostics: log only structural information, never cookie values.
+            import logging
+
+            logger = logging.getLogger("resolver")
+            try:
+                cookie_text = cookie_bytes.decode("utf-8-sig")
+                lines = cookie_text.splitlines()
+                has_netscape_header = any(
+                    line.strip() in (
+                        "# Netscape HTTP Cookie File",
+                        "# HTTP Cookie File",
+                    )
+                    for line in lines[:10]
+                )
+                cookie_lines = [
+                    line for line in lines
+                    if line.strip()
+                    and not line.lstrip().startswith("#")
+                    and len(line.split("\t")) >= 7
+                ]
+                logger.info(
+                    "YouTube-Cookie-Diagnose: Netscape-Header=%s, Cookie-Zeilen=%d",
+                    has_netscape_header,
+                    len(cookie_lines),
+                )
+            except (UnicodeDecodeError, ValueError):
+                logger.warning(
+                    "YouTube-Cookie-Diagnose: Datei ist nicht als UTF-8 lesbar."
+                )
 
         opts = _ydl_opts(max_height, deno_path, prefer_native)
         if cookie_path:
