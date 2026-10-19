@@ -120,7 +120,7 @@
     button { -webkit-tap-highlight-color: transparent; }
     .hidden { display: none !important; }
 
-    /* NORDLICHT / AURORA INTRO OVERLAY */
+    /* NORDLICHT INTRO */
     #cyber-intro {
       position: fixed;
       inset: 0;
@@ -264,7 +264,6 @@
       box-shadow: 0 4px 12px var(--yt-red-glow);
     }
 
-    /* ELEGANTE VIDEO-TITEL ANZEIGE IN DER TOPBAR */
     #topbar-video-title {
       flex: 1;
       max-width: 380px;
@@ -281,7 +280,6 @@
       text-align: center;
     }
 
-    /* SETTINGS POPUP (DROPDOWN) */
     .settings-container {
       position: relative;
     }
@@ -351,10 +349,12 @@
       gap: 4px;
     }
 
-    /* SUCHLEISTE ZENTRIERT */
+    /* SUCHLEISTEN ANIMATION - ZENTRIERT ERST BEIM ANKLICKEN */
     #search-box-wrapper {
       transition: var(--transition);
       z-index: 150;
+      flex: 1;
+      max-width: 520px;
     }
 
     body.search-centered #player-container,
@@ -364,12 +364,14 @@
       pointer-events: none;
     }
 
+    /* ZUSTAND WENN DAS SUCHFELD ANGEKLICKT WIRD (XXL MODUS) */
     body.search-centered #search-box-wrapper {
       position: fixed;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
       width: min(92vw, 640px);
+      max-width: none;
       background: var(--surface-glass-solid);
       padding: 22px;
       border-radius: var(--radius-xl);
@@ -383,14 +385,6 @@
     @keyframes floatSearch {
       0% { transform: translate(-50%, -50%) translateY(0px); }
       100% { transform: translate(-50%, -50%) translateY(-6px); }
-    }
-
-    body:not(.search-centered) #search-box-wrapper {
-      position: relative;
-      top: 0; left: 0; transform: none;
-      flex: 1; max-width: 520px;
-      background: transparent; padding: 0; border: none; box-shadow: none;
-      animation: none;
     }
 
     .search-input-group {
@@ -516,33 +510,65 @@
     .icon-btn { min-width: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
     #volume-slider { accent-color: var(--yt-red); cursor: pointer; width: 100%; }
 
-    /* SEARCH PANEL */
+    /* =========================================================
+       SEARCH PANEL & GROSSE TOUCHSCREEN-OPTIMIERTE CARD RESULTS
+       ========================================================= */
     #search-panel {
-      padding: 24px 28px;
+      padding: 28px;
       background: var(--surface-glass-solid);
       border-bottom: 1px solid var(--border);
       backdrop-filter: blur(30px);
     }
-    .search-panel-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-    #search-heading { color: var(--text-secondary); font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-    #search-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; max-height: 480px; overflow-y: auto; }
+    .search-panel-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    #search-heading { color: var(--text-secondary); font-size: 14px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+    
+    #search-results { 
+      display: grid; 
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); 
+      gap: 20px; 
+      max-height: 560px; 
+      overflow-y: auto; 
+    }
 
+    /* GROSSE TOUCH-CARDS */
     .search-result {
-      display: flex; gap: 14px; padding: 12px;
+      display: flex; 
+      flex-direction: column;
+      gap: 12px; 
+      padding: 16px;
       background: var(--surface-card);
       border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
+      border-radius: var(--radius-xl);
       cursor: pointer; 
       transition: transform 0.3s var(--ease-bounce), background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+      touch-action: manipulation;
     }
-    .search-result:hover {
+    
+    .search-result:hover,
+    .search-result:active {
       background: var(--surface-card-hover);
       border-color: var(--yt-red);
-      transform: translateY(-3px) scale(1.02);
-      box-shadow: var(--shadow-liquid);
+      transform: translateY(-4px) scale(1.02);
+      box-shadow: 0 16px 36px var(--yt-red-glow);
     }
 
-    .search-thumbnail { width: 120px; aspect-ratio: 16/9; object-fit: cover; border-radius: var(--radius-sm); }
+    .search-thumbnail { 
+      width: 100%; 
+      aspect-ratio: 16/9; 
+      object-fit: cover; 
+      border-radius: var(--radius-lg); 
+    }
+
+    .search-result-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.35;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
 
     /* PLAYER CONTAINER */
     #player-container {
@@ -693,10 +719,11 @@
       .search-input-group { flex-direction: column; }
       #query-input, .btn { width: 100%; }
       .playback-pause { width: 52px; height: 52px; min-width: 52px; font-size: 18px; }
+      #search-results { grid-template-columns: 1fr; }
     }
   </style>
 </head>
-<body class="search-centered">
+<body>
 
   <!-- 1. NORDLICHT INTRO -->
   <div id="cyber-intro" onclick="closeIntro()">
@@ -719,7 +746,7 @@
     <!-- HÜBSCHE TITELANZEIGE FÜR DAS AKTUELL GELADENE VIDEO -->
     <div id="topbar-video-title" class="hidden">Kein Video geladen</div>
 
-    <!-- DYNAMISCHE SUCHLEISTE -->
+    <!-- DYNAMISCHE SUCHLEISTE (BEIM FOKUS ZENTRIERT SIE SICH) -->
     <div id="search-box-wrapper">
       <div class="search-input-group">
         <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="YouTube Video suchen oder URL..." aria-label="Video suchen">
@@ -755,8 +782,8 @@
           <div class="settings-section">
             <div class="settings-header">Qualität</div>
             <div id="preset-group" class="settings-option-group" role="group" aria-label="Qualität">
-              <button class="preset-btn active" data-preset="low">Low</button>
-              <button class="preset-btn" data-preset="med">Med</button>
+              <button class="preset-btn" data-preset="low">Low</button>
+              <button class="preset-btn active" data-preset="med">Med</button>
               <button class="preset-btn" data-preset="high">High</button>
             </div>
             <div id="preset-hint" class="subbar-hint hidden" style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Änderungen greifen beim nächsten Play</div>
@@ -882,26 +909,32 @@
         });
       }
 
-      // Suchleisten-Verschiebung
-      function triggerSearchMove() {
-        if (document.body.classList.contains('search-centered')) {
-          document.body.classList.remove('search-centered');
-        }
+      // Suchleisten-Zentrierung ERST BEIM ANKLICKEN / FOKUSSIEREN
+      input.addEventListener('focus', () => {
+        document.body.classList.add('search-centered');
+      });
+
+      // Beim Suchen oder Verlassen wieder einklappen
+      function resetSearchBox() {
+        document.body.classList.remove('search-centered');
       }
 
-      input.addEventListener('focus', triggerSearchMove);
+      searchBtn.addEventListener('click', resetSearchBox);
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') triggerSearchMove();
+        if (e.key === 'Enter') resetSearchBox();
       });
-      searchBtn.addEventListener('click', triggerSearchMove);
 
       if (closeSearchBtn) {
-        closeSearchBtn.addEventListener('click', () => {
-          if (!input.value.trim()) {
-            document.body.classList.add('search-centered');
-          }
-        });
+        closeSearchBtn.addEventListener('click', resetSearchBox);
       }
+
+      // Klick außerhalb des XXL-Suchfelds schließt es wieder
+      document.addEventListener('click', (e) => {
+        const searchWrapper = document.getElementById('search-box-wrapper');
+        if (document.body.classList.contains('search-centered') && !searchWrapper.contains(e.target)) {
+          resetSearchBox();
+        }
+      });
 
       // AUTOMATISCHES AUSBLENDEN DER PLAYBACK CONTROLS NACH UNTÄTIGKEIT
       let controlsTimeout;
