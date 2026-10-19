@@ -27,6 +27,12 @@ const ctx             = canvas.getContext('2d', { alpha: false, desynchronized: 
 const idleOverlay     = document.getElementById('idle-overlay');
 const audioEl         = document.getElementById('ascii-audio');
 const canvasSource     = document.getElementById('canvas-source');
+const playbackControls = document.getElementById('playback-controls');
+const btnPause         = document.getElementById('btn-pause');
+const playbackProgress = document.getElementById('playback-progress');
+const playbackCurrentTime = document.getElementById('playback-current-time');
+const playbackDuration = document.getElementById('playback-duration');
+const playbackLive     = document.getElementById('playback-live');
 
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
@@ -50,6 +56,11 @@ let nativeLastMediaTime = -1;
 let nativeFpsCount = 0;
 let nativeFpsWindowStart = 0;
 let nativeRenderedFps = 0;
+let nativeMediaDuration = 0;
+let nativeIsLive = false;
+let nativeSeekOffset = 0;
+let nativeSeekUsesAbsoluteTime = true;
+let nativePauseAfterSeek = false;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -354,6 +365,127 @@ function renderFrame(now) {
 // ───────── Native video decoder → visible Canvas ─────────
 // Canvas mode intentionally does not transfer individual JPEG frames. The
 // browser decodes one fragmented-MP4 stream and Canvas paints presented frames.
+function formatPlaybackTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+    seconds = Math.floor(seconds);
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return h > 0
+        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function getNativePlaybackTime() {
+    if (!canvasSource) return nativeSeekOffset;
+    const raw = Number(canvasSource.currentTime) || 0;
+    // Some streaming MP4 implementations normalize a seeked segment to zero;
+    // others preserve the source timestamp. The draw loop detects which form
+    // this browser actually receives on the first frame after a seek.
+    if (nativeSeekOffset > 0 && !nativeSeekUsesAbsoluteTime) return nativeSeekOffset + raw;
+    if (nativeSeekOffset > 0 && nativeSeekUsesAbsoluteTime === null) return nativeSeekOffset + raw;
+    return raw;
+}
+
+function updatePlaybackControls() {
+    if (!playbackControls) return;
+    const visible = canvasVideoMode && appState === 'playing';
+    playbackControls.classList.toggle('hidden', !visible);
+    if (!visible) return;
+
+    const paused = !canvasSource || canvasSource.paused;
+    btnPause.textContent = paused ? '▶' : 'Ⅱ';
+    btnPause.setAttribute('aria-label', paused ? 'Fortsetzen' : 'Pause');
+    btnPause.title = paused ? 'Fortsetzen' : 'Pause';
+
+    const browserDuration = canvasSource && Number.isFinite(canvasSource.duration) && canvasSource.duration > 0
+        ? canvasSource.duration : 0;
+    const duration = nativeMediaDuration > 0 ? nativeMediaDuration : browserDuration;
+    const live = nativeIsLive;
+    playbackLive.classList.toggle('hidden', !live);
+    playbackProgress.classList.toggle('hidden', live || !(duration > 0));
+    playbackCurrentTime.classList.toggle('hidden', live || !(duration > 0));
+    playbackDuration.classList.toggle('hidden', live || !(duration > 0));
+    playbackProgress.disabled = live || !(duration > 0);
+
+    if (live || !(duration > 0)) {
+        playbackCurrentTime.textContent = 'LIVE';
+        playbackDuration.textContent = '';
+        return;
+    }
+
+    const current = Math.min(duration, getNativePlaybackTime());
+    playbackCurrentTime.textContent = formatPlaybackTime(current);
+    playbackDuration.textContent = formatPlaybackTime(duration);
+    if (document.activeElement !== playbackProgress) {
+        playbackProgress.value = String(Math.round((current / duration) * 1000));
+    }
+}
+
+async function toggleNativePause() {
+    if (!canvasVideoMode || !canvasSource || appState !== 'playing') return;
+    if (canvasSource.paused) {
+        try {
+            await canvasSource.play();
+        } catch (err) {
+            statusPerf.textContent = `Fortsetzen nicht möglich: ${err && err.name || 'Fehler'}`;
+            statusPerf.classList.remove('hidden');
+        }
+    } else {
+        canvasSource.pause();
+    }
+    updatePlaybackControls();
+}
+
+async function seekNativeCanvas(seconds) {
+    if (!canvasVideoMode || !canvasSource || !sessionId || nativeIsLive || !(nativeMediaDuration > 0)) return;
+    const target = Math.max(0, Math.min(nativeMediaDuration - 0.5, Number(seconds) || 0));
+    const wasPaused = canvasSource.paused;
+    nativeSeekOffset = target;
+    nativeSeekUsesAbsoluteTime = null;
+    nativePauseAfterSeek = wasPaused;
+    nativeLastMediaTime = -1;
+    nativeDrawLoopRunning = false;
+    if (nativeDrawRaf !== null) {
+        cancelAnimationFrame(nativeDrawRaf);
+        nativeDrawRaf = null;
+    }
+    if (nativeVideoFrameCallback !== null && typeof canvasSource.cancelVideoFrameCallback === 'function') {
+        try { canvasSource.cancelVideoFrameCallback(nativeVideoFrameCallback); } catch (_) {}
+        nativeVideoFrameCallback = null;
+    }
+
+    canvasSource.pause();
+    const newSrc = `/media?session=${encodeURIComponent(sessionId)}&start=${encodeURIComponent(target.toFixed(3))}&_=${Date.now()}`;
+    canvasSource.src = newSrc;
+    canvasSource.load();
+    // Start the new stream so its first frame can be decoded. If playback was
+    // paused, nativeCanvasDrawLoop pauses again immediately after painting it.
+    try {
+        await canvasSource.play();
+    } catch (err) {
+        nativePauseAfterSeek = false;
+        statusPerf.textContent = `Sprung fehlgeschlagen: ${err && err.name || 'Streamfehler'}`;
+        statusPerf.classList.remove('hidden');
+    }
+    updatePlaybackControls();
+}
+
+if (btnPause) btnPause.addEventListener('click', toggleNativePause);
+if (playbackProgress) {
+    playbackProgress.addEventListener('input', () => {
+        if (nativeMediaDuration > 0 && !nativeIsLive) {
+            const previewTime = nativeMediaDuration * (Number(playbackProgress.value) / 1000);
+            playbackCurrentTime.textContent = formatPlaybackTime(previewTime);
+        }
+    });
+    playbackProgress.addEventListener('change', () => {
+        if (nativeMediaDuration > 0 && !nativeIsLive) {
+            seekNativeCanvas(nativeMediaDuration * (Number(playbackProgress.value) / 1000));
+        }
+    });
+}
+
 function stopNativeCanvasSource() {
     nativeDrawLoopRunning = false;
     if (nativeDrawRaf !== null) {
@@ -374,10 +506,20 @@ function stopNativeCanvasSource() {
         canvasSource.onwaiting = null;
         canvasSource.onended = null;
         canvasSource.onerror = null;
+        canvasSource.onpause = null;
+        canvasSource.ontimeupdate = null;
+        canvasSource.ondurationchange = null;
+        canvasSource.onseeked = null;
         try { canvasSource.pause(); } catch (_) {}
         canvasSource.removeAttribute('src');
         try { canvasSource.load(); } catch (_) {}
     }
+    nativeMediaDuration = 0;
+    nativeIsLive = false;
+    nativeSeekOffset = 0;
+    nativeSeekUsesAbsoluteTime = true;
+    nativePauseAfterSeek = false;
+    if (playbackControls) playbackControls.classList.add('hidden');
 }
 
 function nativeCanvasDrawLoop(now) {
@@ -393,8 +535,15 @@ function nativeCanvasDrawLoop(now) {
         if (mediaTime !== nativeLastMediaTime) {
             try {
                 ctx.drawImage(canvasSource, 0, 0, canvas.width, canvas.height);
+                if (nativeSeekUsesAbsoluteTime === null) {
+                    nativeSeekUsesAbsoluteTime = nativeSeekOffset > 0 && mediaTime >= Math.max(0.5, nativeSeekOffset * 0.5);
+                }
                 nativeLastMediaTime = mediaTime;
                 nativeFpsCount++;
+                if (nativePauseAfterSeek) {
+                    nativePauseAfterSeek = false;
+                    canvasSource.pause();
+                }
             } catch (err) {
                 console.warn('Native Canvas draw failed:', err);
             }
@@ -430,7 +579,7 @@ function ensureNativeCanvasDrawLoop() {
     }
 }
 
-function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
+function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durationSeconds, isLive) {
     if (!canvasSource) {
         setError('Canvas-Videoelement fehlt. Bitte static/index.html prüfen.');
         return;
@@ -442,6 +591,11 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     nativeLastMediaTime = -1;
     nativeFpsCount = 0;
     nativeFpsWindowStart = 0;
+    nativeMediaDuration = Number.isFinite(Number(durationSeconds)) ? Math.max(0, Number(durationSeconds)) : 0;
+    nativeIsLive = Boolean(isLive);
+    nativeSeekOffset = 0;
+    nativeSeekUsesAbsoluteTime = true;
+    nativePauseAfterSeek = false;
 
     canvasSource.playsInline = true;
     canvasSource.controls = false;
@@ -463,6 +617,7 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
         if (appState !== 'playing' || !canvasVideoMode) return;
         setStatus('PLAYING · CANVAS', 'playing');
         nativeFpsWindowStart = 0;
+        updatePlaybackControls();
         ensureNativeCanvasDrawLoop();
     };
     canvasSource.onwaiting = () => {
@@ -476,6 +631,26 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
             finishPlayback();
         }
     };
+    canvasSource.onpause = () => {
+        if (appState === 'playing' && canvasVideoMode && !canvasSource.ended) {
+            // A paused HTMLMediaElement may stop issuing video-frame callbacks.
+            // Clear the loop flag so onplaying can always restart drawing.
+            nativeDrawLoopRunning = false;
+            if (nativeDrawRaf !== null) {
+                cancelAnimationFrame(nativeDrawRaf);
+                nativeDrawRaf = null;
+            }
+            if (nativeVideoFrameCallback !== null && typeof canvasSource.cancelVideoFrameCallback === 'function') {
+                try { canvasSource.cancelVideoFrameCallback(nativeVideoFrameCallback); } catch (_) {}
+                nativeVideoFrameCallback = null;
+            }
+            if (!nativePauseAfterSeek) setStatus('PAUSED · CANVAS', 'idle');
+            updatePlaybackControls();
+        }
+    };
+    canvasSource.ontimeupdate = updatePlaybackControls;
+    canvasSource.ondurationchange = updatePlaybackControls;
+    canvasSource.onseeked = updatePlaybackControls;
     canvasSource.onerror = () => {
         if (appState !== 'playing' || !canvasVideoMode) return;
         const code = canvasSource.error ? canvasSource.error.code : 0;
@@ -489,8 +664,9 @@ function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     };
 
     setStatus('BUFFERING · CANVAS', 'resolving');
-    canvasSource.src = `/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
+    canvasSource.src = `/media?session=${encodeURIComponent(sid)}&start=0&_=${Date.now()}`;
     canvasSource.load();
+    updatePlaybackControls();
     canvasSource.play().catch((err) => {
         if (appState !== 'playing' || !canvasVideoMode) return;
         if (err && err.name === 'NotAllowedError') {
@@ -694,7 +870,7 @@ async function doPlay() {
     updateTitle(data.title, data.is_live);
     if (selectedDisplayMode === 'canvas') {
         idleOverlay.classList.add('hidden');
-        startNativeCanvasMedia(sessionId, data.canvas_width, data.canvas_height);
+        startNativeCanvasMedia(sessionId, data.canvas_width, data.canvas_height, data.duration, data.is_live);
     } else {
         connectWs(sessionId);
     }
