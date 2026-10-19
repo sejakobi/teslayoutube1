@@ -23,9 +23,10 @@ const volumeSlider    = document.getElementById('volume-slider');
 const playerContainer = document.getElementById('player-container');
 const asciiPlayer     = document.getElementById('ascii-player');
 const canvas          = document.getElementById('ascii-canvas');
-const ctx             = canvas.getContext('2d');
+const ctx             = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const idleOverlay     = document.getElementById('idle-overlay');
 const audioEl         = document.getElementById('ascii-audio');
+const canvasSource     = document.getElementById('canvas-source');
 
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
@@ -42,6 +43,13 @@ let selectedPreset = 'low';
 let selectedDisplayMode = 'canvas';
 let canvasVideoMode = false;
 let lastCanvasFrameIndex = -1;
+let nativeVideoFrameCallback = null;
+let nativeDrawRaf = null;
+let nativeDrawLoopRunning = false;
+let nativeLastMediaTime = -1;
+let nativeFpsCount = 0;
+let nativeFpsWindowStart = 0;
+let nativeRenderedFps = 0;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -79,15 +87,6 @@ let fpsBelowThreshold = false;
 let lastPaintTime    = 0;
 let maxPaintInterval = 0;
 
-// Canvas diagnostics: measure WebSocket arrival, JPEG decode and canvas paint
-// separately so the real bottleneck is visible in the HUD.
-let rxFramesWindow = 0;
-let decodedFramesWindow = 0;
-let rxBytesWindow = 0;
-let measuredRxFps = 0;
-let measuredDecodeFps = 0;
-let measuredRxMBps = 0;
-
 // ───────── Preset selection UI ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -120,15 +119,18 @@ function updateConfigHint() {
 let isMuted = false;
 
 volumeSlider.addEventListener('input', () => {
-    if (!audioEl) return;
-    audioEl.volume = parseFloat(volumeSlider.value);
-    isMuted = audioEl.volume === 0;
+    const volume = parseFloat(volumeSlider.value);
+    if (audioEl) audioEl.volume = volume;
+    if (canvasSource) canvasSource.volume = volume;
+    isMuted = volume === 0;
+    if (canvasSource && canvasVideoMode) canvasSource.muted = isMuted;
     updateMuteBtn();
 });
 
 btnMute.addEventListener('click', () => {
     isMuted = !isMuted;
     if (audioEl) audioEl.muted = isMuted;
+    if (canvasSource) canvasSource.muted = isMuted;
     updateMuteBtn();
 });
 
@@ -272,28 +274,14 @@ function renderFrame(now) {
     lastPaintTime = now;
 
     if (now - lastFpsUpdate >= 1000) {
-        const elapsedSec = Math.max(0.001, (now - lastFpsUpdate) / 1000);
-        measuredFps      = Math.round(frameCount / elapsedSec);
+        measuredFps      = frameCount;
         frameCount       = 0;
         lastFpsUpdate    = now;
         const jitter     = Math.round(maxPaintInterval);
         maxPaintInterval = 0;
-        if (canvasVideoMode) {
-            measuredRxFps = Math.round(rxFramesWindow / elapsedSec);
-            measuredDecodeFps = Math.round(decodedFramesWindow / elapsedSec);
-            measuredRxMBps = (rxBytesWindow / 1048576) / elapsedSec;
-            rxFramesWindow = 0;
-            decodedFramesWindow = 0;
-            rxBytesWindow = 0;
-            statusFps.textContent =
-                `RX ${measuredRxFps} | DEC ${measuredDecodeFps} | ` +
-                `DRAW ${measuredFps}/${Math.round(targetFps)} | ` +
-                `${measuredRxMBps.toFixed(2)} MB/s | BUF ${frameBuffer.length}`;
-        } else {
-            statusFps.textContent =
-                `FPS ${measuredFps}/${Math.round(targetFps)}  ` +
-                `JIT ${jitter}ms  BUF ${frameBuffer.length}`;
-        }
+        statusFps.textContent =
+            `FPS ${measuredFps}/${Math.round(targetFps)}  ` +
+            `JIT ${jitter}ms  BUF ${frameBuffer.length}`;
     }
 
     fpsWindowFrames++;
@@ -363,6 +351,165 @@ function renderFrame(now) {
     asciiPlayer.style.color   = 'transparent';
 }
 
+// ───────── Native video decoder → visible Canvas ─────────
+// Canvas mode intentionally does not transfer individual JPEG frames. The
+// browser decodes one fragmented-MP4 stream and Canvas paints presented frames.
+function stopNativeCanvasSource() {
+    nativeDrawLoopRunning = false;
+    if (nativeDrawRaf !== null) {
+        cancelAnimationFrame(nativeDrawRaf);
+        nativeDrawRaf = null;
+    }
+    if (canvasSource && nativeVideoFrameCallback !== null &&
+        typeof canvasSource.cancelVideoFrameCallback === 'function') {
+        try { canvasSource.cancelVideoFrameCallback(nativeVideoFrameCallback); } catch (_) {}
+    }
+    nativeVideoFrameCallback = null;
+    nativeLastMediaTime = -1;
+    nativeFpsCount = 0;
+    nativeFpsWindowStart = 0;
+    if (canvasSource) {
+        canvasSource.onloadedmetadata = null;
+        canvasSource.onplaying = null;
+        canvasSource.onwaiting = null;
+        canvasSource.onended = null;
+        canvasSource.onerror = null;
+        try { canvasSource.pause(); } catch (_) {}
+        canvasSource.removeAttribute('src');
+        try { canvasSource.load(); } catch (_) {}
+    }
+}
+
+function nativeCanvasDrawLoop(now) {
+    if (!nativeDrawLoopRunning || appState !== 'playing' || !canvasVideoMode || !canvasSource || canvasSource.paused) {
+        nativeDrawLoopRunning = false;
+        return;
+    }
+
+    if (canvasSource.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && canvas.width && canvas.height) {
+        const mediaTime = canvasSource.currentTime;
+        // The RAF fallback may run at 60 Hz even for a 25/30 FPS source. Draw
+        // only when the decoded video time advances; rVFC is already frame-led.
+        if (mediaTime !== nativeLastMediaTime) {
+            try {
+                ctx.drawImage(canvasSource, 0, 0, canvas.width, canvas.height);
+                nativeLastMediaTime = mediaTime;
+                nativeFpsCount++;
+            } catch (err) {
+                console.warn('Native Canvas draw failed:', err);
+            }
+        }
+    }
+
+    if (!nativeFpsWindowStart) nativeFpsWindowStart = now;
+    const elapsed = now - nativeFpsWindowStart;
+    if (elapsed >= 1000) {
+        nativeRenderedFps = Math.round(nativeFpsCount * 1000 / elapsed);
+        statusFps.textContent = `FPS ${nativeRenderedFps} · ${canvas.width}×${canvas.height}`;
+        const tooSlow = nativeRenderedFps < Math.max(12, targetFps * 0.65);
+        statusPerf.classList.toggle('hidden', !tooSlow);
+        if (tooSlow) statusPerf.textContent = 'Video-Stream wird gebremst';
+        nativeFpsCount = 0;
+        nativeFpsWindowStart = now;
+    }
+
+    if (typeof canvasSource.requestVideoFrameCallback === 'function') {
+        nativeVideoFrameCallback = canvasSource.requestVideoFrameCallback(nativeCanvasDrawLoop);
+    } else {
+        nativeDrawRaf = requestAnimationFrame(nativeCanvasDrawLoop);
+    }
+}
+
+function ensureNativeCanvasDrawLoop() {
+    if (nativeDrawLoopRunning || !canvasSource || !canvasVideoMode) return;
+    nativeDrawLoopRunning = true;
+    if (typeof canvasSource.requestVideoFrameCallback === 'function') {
+        nativeVideoFrameCallback = canvasSource.requestVideoFrameCallback(nativeCanvasDrawLoop);
+    } else {
+        nativeDrawRaf = requestAnimationFrame(nativeCanvasDrawLoop);
+    }
+}
+
+function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
+    if (!canvasSource) {
+        setError('Canvas-Videoelement fehlt. Bitte static/index.html prüfen.');
+        return;
+    }
+
+    canvasVideoMode = true;
+    targetFps = 30; // display stats reflect the decoded source cadence, not a server JPEG cap.
+    buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360);
+    nativeLastMediaTime = -1;
+    nativeFpsCount = 0;
+    nativeFpsWindowStart = 0;
+
+    canvasSource.playsInline = true;
+    canvasSource.controls = false;
+    canvasSource.preload = 'auto';
+    canvasSource.muted = isMuted;
+    canvasSource.volume = parseFloat(volumeSlider.value);
+
+    canvasSource.onloadedmetadata = () => {
+        if (appState !== 'playing' || !canvasVideoMode) return;
+        // Preserve the actual source dimensions for sharp Canvas output. CSS
+        // scales the canvas to the player viewport without reducing its pixels.
+        if (canvasSource.videoWidth > 0 && canvasSource.videoHeight > 0) {
+            canvas.width = canvasSource.videoWidth;
+            canvas.height = canvasSource.videoHeight;
+        }
+        layoutVideoCanvas();
+    };
+    canvasSource.onplaying = () => {
+        if (appState !== 'playing' || !canvasVideoMode) return;
+        setStatus('PLAYING · CANVAS', 'playing');
+        nativeFpsWindowStart = 0;
+        ensureNativeCanvasDrawLoop();
+    };
+    canvasSource.onwaiting = () => {
+        if (appState === 'playing' && canvasVideoMode) {
+            setStatus('BUFFERING · CANVAS', 'resolving');
+        }
+    };
+    canvasSource.onended = () => {
+        if (appState === 'playing' && canvasVideoMode) {
+            setStatus('ENDED', 'idle');
+            finishPlayback();
+        }
+    };
+    canvasSource.onerror = () => {
+        if (appState !== 'playing' || !canvasVideoMode) return;
+        const code = canvasSource.error ? canvasSource.error.code : 0;
+        const reason = ({
+            1: 'Laden abgebrochen',
+            2: 'Netzwerkfehler',
+            3: 'Videodecodierung fehlgeschlagen',
+            4: 'Streamformat nicht unterstützt'
+        })[code] || 'unbekannter Videofehler';
+        setError(`Canvas-Stream: ${reason} (Code ${code}). Render-Logs prüfen.`);
+    };
+
+    setStatus('BUFFERING · CANVAS', 'resolving');
+    canvasSource.src = `/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
+    canvasSource.load();
+    canvasSource.play().catch((err) => {
+        if (appState !== 'playing' || !canvasVideoMode) return;
+        if (err && err.name === 'NotAllowedError') {
+            statusPerf.textContent = 'Klicke auf das Bild, um die Wiedergabe zu starten';
+            statusPerf.classList.remove('hidden');
+        } else {
+            statusPerf.textContent = `Video: ${err && err.name || 'Wiedergabefehler'}`;
+            statusPerf.classList.remove('hidden');
+        }
+    });
+}
+
+// Some browsers require another direct user gesture after stream resolution.
+canvas.addEventListener('click', () => {
+    if (canvasVideoMode && canvasSource && canvasSource.paused && appState === 'playing') {
+        canvasSource.play().catch(() => {});
+    }
+});
+
 function startRenderingAndAudio(sid) {
     if (audioEl) {
         audioEl.pause();
@@ -395,12 +542,6 @@ function connectWs(sid) {
     clockAnchored      = false;
     lastPaintTime      = 0;
     maxPaintInterval   = 0;
-    rxFramesWindow = 0;
-    decodedFramesWindow = 0;
-    rxBytesWindow = 0;
-    measuredRxFps = 0;
-    measuredDecodeFps = 0;
-    measuredRxMBps = 0;
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
@@ -449,15 +590,12 @@ function connectWs(sid) {
             const idx = parseInt(event.data.substring(0, nl));
             frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
         } else {
-            rxFramesWindow++;
-            rxBytesWindow += event.data.byteLength;
             const view = new DataView(event.data);
             const idx  = view.getUint32(0, false);
             if (canvasVideoMode) {
                 if (idx <= lastCanvasFrameIndex) return;
                 const jpeg = event.data.slice(4);
                 createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then(bitmap => {
-                    decodedFramesWindow++;
                     if (appState !== 'playing' || !canvasVideoMode || idx <= lastCanvasFrameIndex) {
                         bitmap.close();
                         return;
@@ -516,6 +654,7 @@ async function doPlay() {
     presetHint.classList.add('hidden');
     stopPoll();
     closeWs();
+    if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
     clearCanvas();
 
     wsRetryCount = 0;
@@ -553,7 +692,12 @@ async function doPlay() {
     appState  = 'playing';
     setUiState('playing');
     updateTitle(data.title, data.is_live);
-    connectWs(sessionId);
+    if (selectedDisplayMode === 'canvas') {
+        idleOverlay.classList.add('hidden');
+        startNativeCanvasMedia(sessionId, data.canvas_width, data.canvas_height);
+    } else {
+        connectWs(sessionId);
+    }
     startPoll();
 }
 
@@ -627,6 +771,7 @@ function finishPlayback() {
     readyToRender      = false;
     clearFrameBuffer();
     if (audioEl) { audioEl.pause(); audioEl.src = ''; }
+    stopNativeCanvasSource();
     clearCanvas();
     idleOverlay.classList.remove('hidden');
     setUiState('idle');
@@ -636,6 +781,8 @@ function finishPlayback() {
 }
 
 function clearCanvas() {
+    // Also stop an active native media request before a new Play/Stop.
+    stopNativeCanvasSource();
     canvasVideoMode = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     canvas.style.display      = 'none';
