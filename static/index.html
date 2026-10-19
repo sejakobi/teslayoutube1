@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=native2">
+  <link rel="stylesheet" href="/static/style.css?v=native-controls1">
 </head>
 <body>
   <header id="topbar">
@@ -32,9 +32,16 @@
     <pre id="ascii-player"></pre><canvas id="ascii-canvas"></canvas>
     <video id="canvas-source" playsinline preload="auto" aria-hidden="true"></video>
     <div id="idle-overlay"><div id="idle-content"><div id="idle-logo">ASCILINE</div><div id="idle-sub">ASCII / CANVAS video streaming</div><div id="idle-arrow">↑ Suche ein Video oder gib eine Video-ID ein</div></div></div>
+    <div id="playback-controls" class="playback-controls hidden" aria-label="Videosteuerung">
+      <button id="btn-pause" class="playback-pause" type="button" aria-label="Pause" title="Pause">Ⅱ</button>
+      <span id="playback-current-time" class="playback-time">0:00</span>
+      <input id="playback-progress" class="playback-progress" type="range" min="0" max="1000" step="1" value="0" aria-label="Video-Fortschritt" title="Zum Zeitpunkt springen">
+      <span id="playback-duration" class="playback-time">0:00</span>
+      <span id="playback-live" class="playback-live hidden">● LIVE</span>
+    </div>
   </main>
   <footer id="statusbar"><span id="status-title" class="status-segment"></span><span id="status-live" class="live-badge hidden">● LIVE</span><span id="status-state" class="status-segment status-state">IDLE</span><span id="status-fps" class="status-segment status-fps"></span><span id="status-perf-hint" class="status-segment status-perf hidden">↓ try a lower preset</span></footer>
   <audio id="ascii-audio" preload="auto"></audio>
-  <script src="/static/app.js?v=native2"></script>
+  <script src="/static/app.js?v=native-controls1"></script>
 </body>
 </html>
