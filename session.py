@@ -100,13 +100,18 @@ class SessionManager:
                 mode=preset_cfg["mode"],
             )
 
-            pipeline = VideoPipeline(media.video_url, preset)
+            pipeline = VideoPipeline(
+                media.video_url,
+                preset,
+                headers=media.video_headers,
+            )
             pipeline.start()
 
             # Audio: prefer the separate audio URL; fall back to the muxed
-            # video URL (ffmpeg -vn extracts the audio track).
+            # video URL. Forward the headers belonging to that exact stream.
             audio_src = media.audio_url if media.audio_url else media.video_url
-            audio_pipeline = AudioPipeline(audio_src)
+            audio_headers = media.audio_headers if media.audio_url else media.video_headers
+            audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
             audio_pipeline.start()
 
             session.media = media
