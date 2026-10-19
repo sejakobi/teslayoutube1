@@ -840,7 +840,6 @@ async function doPlay() {
     if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
 
     appState      = 'resolving';
-    if (watchStartButton) watchStartButton.classList.add('hidden');
     currentPreset = selectedPreset;
     setUiState('resolving');
     setStatus('RESOLVING…', 'resolving');
@@ -860,13 +859,11 @@ async function doPlay() {
     } catch (err) {
         setError('Network error — ' + err.message);
         setUiState('idle');
-        if (watchStartButton) watchStartButton.classList.remove('hidden');
         return;
     }
     if (!resp.ok) {
         setError(data.error || `Server error ${resp.status}`);
         setUiState('idle');
-        if (watchStartButton) watchStartButton.classList.remove('hidden');
         return;
     }
 
@@ -1098,14 +1095,14 @@ function makeSearchCard(item) {
             openChannel(item);
             return;
         }
-        pendingSearchCreator = item.channel_id ? {
-            channel_id: item.channel_id,
-            title: item.channel || 'YouTube-Kanal',
-            thumbnail: ''
-        } : null;
-        queryInput.value = item.video_id;
-        searchPanel.classList.add('hidden');
-        doPlay();
+        // Open the dedicated watch page and pass the selected video ID.
+        // watch.html reads the `v` parameter and starts playback automatically.
+        if (!item.video_id) {
+            const errorEl = document.getElementById('search-message');
+            if (errorEl) errorEl.textContent = 'Für dieses Element wurde keine Video-ID geliefert.';
+            return;
+        }
+        window.location.href = `/watch.html?v=${encodeURIComponent(item.video_id)}`;
     });
     return card;
 }
@@ -1229,48 +1226,7 @@ function loadMoreSearchResults() {
     return executeSearch(activeSearchParams, { append: true });
 }
 
-// ───────── Wiring / watch-page auto-start ─────────
-// A watch link may pass the selected YouTube video as ?v=ID, ?video=ID,
-// ?video_id=ID, ?id=ID, or a general search/URL as ?q=... . When a video
-// identifier is present, populate the player and start automatically.
-const watchStartButton = document.getElementById('watch-start');
-const watchParams = new URLSearchParams(window.location.search);
-const initialWatchQuery = (
-    watchParams.get('v') ||
-    watchParams.get('video') ||
-    watchParams.get('videoId') ||
-    watchParams.get('video_id') ||
-    watchParams.get('id') ||
-    watchParams.get('url') ||
-    watchParams.get('src') ||
-    watchParams.get('q') ||
-    watchParams.get('query') ||
-    ''
-).trim();
-
-if (initialWatchQuery) {
-    queryInput.value = initialWatchQuery;
-    // Wait until the deferred script has completed wiring before starting.
-    window.addEventListener('load', () => {
-        if (appState === 'idle') void doPlay();
-    }, { once: true });
-}
-
-if (watchStartButton) {
-    watchStartButton.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const query = (queryInput.value || '').trim();
-        if (!query) {
-            const errorEl = document.getElementById('watch-error');
-            if (errorEl) errorEl.textContent = 'Kein Video übergeben. Bitte watch.html?v=VIDEO_ID öffnen.';
-            return;
-        }
-        watchStartButton.classList.add('hidden');
-        void doPlay();
-    });
-}
-
+// ───────── Wiring ─────────
 btnPlay.addEventListener('click', doPlay);
 btnSearch.addEventListener('click', () => doSearch(currentSearchType));
 if (btnCloseSearch) btnCloseSearch.addEventListener('click', () => searchPanel.classList.add('hidden'));
