@@ -570,6 +570,36 @@
       overflow: hidden;
     }
 
+    /* CREATOR-SUCHE IM CYBER.CINEMA-DESIGN */
+    .search-panel-actions { display:flex; align-items:center; gap:10px; }
+    .search-tabs { display:flex; gap:8px; margin:0 0 18px; padding:4px; width:max-content; max-width:100%; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--surface-card); }
+    .search-tab { min-height:36px; border:1px solid transparent; border-radius:var(--radius-md); padding:7px 14px; cursor:pointer; background:transparent; color:var(--text-secondary); font-size:12px; font-weight:700; transition:var(--transition); }
+    .search-tab:hover { color:var(--text-primary); background:var(--surface-card-hover); }
+    .search-tab.active { background:var(--yt-red); color:#fff; box-shadow:0 4px 12px var(--yt-red-glow); }
+    #search-message { min-height:20px; margin:0 0 14px; color:var(--text-secondary); font-size:12px; }
+    .search-details { display:flex; flex-direction:column; gap:7px; min-width:0; }
+    .search-channel { color:var(--text-secondary); font-size:12px; font-weight:600; }
+    .search-description { color:var(--text-secondary); font-size:12px; line-height:1.45; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+    .search-published { color:var(--text-secondary); font-size:11px; }
+    .search-result-channel .search-thumbnail { width:92px; max-width:92px; aspect-ratio:1 / 1; border-radius:50%; align-self:flex-start; }
+    .search-footer { display:flex; justify-content:center; padding-top:20px; }
+    #btn-load-more { min-width:min(100%, 280px); }
+    .creator-channel-bar { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:14px 28px; background:var(--surface-glass); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border-bottom:1px solid var(--border); }
+    .creator-channel-info { display:flex; flex-direction:column; min-width:0; gap:4px; }
+    .creator-channel-eyebrow { color:var(--text-secondary); font-size:10px; font-weight:800; letter-spacing:.11em; text-transform:uppercase; }
+    #creator-channel-title { color:var(--text-primary); font-size:14px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #creator-channel-subtitle { color:var(--text-secondary); font-size:11px; }
+    #btn-view-channel-videos { flex-shrink:0; }
+    body.cinema-mode .creator-channel-bar { background:#000 !important; border-color:rgba(255,255,255,.04) !important; }
+    @media (max-width:768px) {
+      .search-panel-actions { gap:6px; }
+      .search-panel-top { gap:10px; }
+      .search-tabs { width:100%; }
+      .search-tab { flex:1; padding-left:8px; padding-right:8px; }
+      .creator-channel-bar { align-items:stretch; flex-direction:column; padding:12px 16px; }
+      #btn-view-channel-videos { width:100%; }
+    }
+
     /* PLAYER CONTAINER */
     #player-container {
       position: relative;
@@ -749,8 +779,8 @@
     <!-- DYNAMISCHE SUCHLEISTE (BEIM FOKUS ZENTRIERT SIE SICH) -->
     <div id="search-box-wrapper">
       <div class="search-input-group">
-        <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="YouTube Video suchen oder URL..." aria-label="Video suchen">
-        <button id="btn-search" class="btn btn-secondary" type="button" aria-label="YouTube suchen"><span class="btn-icon">⌕</span><span class="btn-label">Suchen</span></button>
+        <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Suchen" aria-label="Video suchen">
+        <button id="btn-search" class="btn btn-secondary" type="button" aria-label="suchen"><span class="btn-icon">⌕</span><span class="btn-label">Suchen</span></button>
       </div>
     </div>
 
@@ -812,14 +842,22 @@
     </div>
   </header>
 
-  <!-- SEARCH RESULTS PANEL -->
+  <!-- SUCHERGEBNISSE: VIDEOS, KANÄLE UND WEITERE SEITEN -->
   <section id="search-panel" class="hidden" aria-label="YouTube-Suchergebnisse">
     <div class="search-panel-top">
-      <div id="search-heading">Suchergebnisse</div>
-      <button id="btn-close-search" class="icon-btn" type="button" aria-label="Suchergebnisse schließen">✕</button>
+      <div id="search-heading">YOUTUBE-SUCHERGEBNISSE</div>
+      <div class="search-panel-actions">
+        <button id="btn-back-channels" class="btn btn-secondary hidden" type="button">← Zur Kanalsuche</button>
+        <button id="btn-close-search" class="icon-btn" type="button" aria-label="Suchergebnisse schließen">✕</button>
+      </div>
+    </div>
+    <div id="search-tabs" class="search-tabs" role="group" aria-label="Suchtyp">
+      <button id="search-tab-videos" class="search-tab active" type="button">VIDEOS</button>
+      <button id="search-tab-channels" class="search-tab" type="button">KANÄLE / CREATOR</button>
     </div>
     <div id="search-message" role="status" aria-live="polite"></div>
     <div id="search-results"></div>
+    <div class="search-footer"><button id="btn-load-more" class="btn btn-secondary hidden" type="button">MEHR ERGEBNISSE LADEN</button></div>
   </section>
 
   <!-- KINO PLAYER CONTAINER -->
@@ -846,6 +884,17 @@
       <span id="playback-live" class="playback-live hidden">● LIVE</span>
     </div>
   </main>
+
+
+  <!-- CREATOR-KURZWEG UNTER DEM PLAYER -->
+  <section id="creator-channel-bar" class="creator-channel-bar hidden" aria-live="polite">
+    <div class="creator-channel-info">
+      <span class="creator-channel-eyebrow">Aktuelles Video · Creator</span>
+      <strong id="creator-channel-title">YouTube-Kanal</strong>
+      <span id="creator-channel-subtitle">Alle verfügbaren öffentlichen Videos ansehen</span>
+    </div>
+    <button id="btn-view-channel-videos" class="btn btn-primary" type="button">▶ Alle Videos dieses Creators</button>
+  </section>
 
   <!-- STATUSBAR -->
   <footer id="statusbar">
@@ -957,7 +1006,7 @@
         const state = statusState.textContent.toUpperCase();
         if (state.includes('RESOLVING') || state.includes('LOADING') || state.includes('BUFFERING')) {
           bufferOverlay.classList.remove('hidden');
-          bufferText.textContent = state.includes('RESOLVING') ? 'URL wird aufgelöst…' : 'Video wird geladen…';
+          bufferText.textContent = state.includes('RESOLVING') ? '' : 'Video wird geladen…';
         } else {
           bufferOverlay.classList.add('hidden');
         }
@@ -992,6 +1041,6 @@
     });
   </script>
 
-  <script src="/static/app.js?v=native-controls1"></script>
+  <script src="/static/app.js?v=cyber-creator2"></script>
 </body>
 </html>
