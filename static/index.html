@@ -2,710 +2,935 @@
 <html lang="de">
 <head>
   <meta charset="utf-8">
-  <title>Cyber.cinema — HUD Matrix 2026</title>
+  <title>Cyber.cinema</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#030205">
+  <meta name="theme-color" content="#ffffff">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,700;0,900;1,900&family=JetBrains+Mono:wght@400;600;800&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
-  
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     /* =========================================================
-       CYBER.CINEMA 2026 - RADICAL HUD SYSTEM
-       Color Palette: Deep Cyber Void (#030205), Cyber Red (#ff0055),
-       Cyber Gold (#ffd700), Neon Cyan (#00f3ff)
+       SYSTEM-ADAPTIVE APPLE LIQUID GLASS & YOUTUBE RED DESIGN
        ========================================================= */
     :root {
-      color-scheme: dark;
-      --bg: #030205;
+      color-scheme: light dark;
       
-      --red-neon: #ff0055;
-      --red-glow: rgba(255, 0, 85, 0.5);
-      --gold-neon: #ffd700;
-      --gold-glow: rgba(255, 215, 0, 0.4);
-      --cyan-neon: #00f3ff;
-      --cyan-glow: rgba(0, 243, 255, 0.4);
+      /* HELL-MODUS (Default System Light) */
+      --bg: #f8f9fa;
+      --bg-player: #0a0a0c;
+      --surface-glass: rgba(255, 255, 255, 0.75);
+      --surface-glass-solid: rgba(255, 255, 255, 0.94);
+      --surface-card: rgba(0, 0, 0, 0.03);
+      --surface-card-hover: rgba(0, 0, 0, 0.06);
       
-      --gold-grad: linear-gradient(135deg, #fff7a1 0%, #ffd700 50%, #ff8c00 100%);
-      --red-grad: linear-gradient(135deg, #ff0055 0%, #990033 100%);
-      --cyan-grad: linear-gradient(135deg, #00f3ff 0%, #006699 100%);
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.16);
       
-      --hud-glass: rgba(10, 8, 16, 0.75);
-      --hud-glass-solid: rgba(15, 12, 22, 0.95);
-      --hud-border: rgba(0, 243, 255, 0.25);
-      --hud-border-gold: rgba(255, 215, 0, 0.3);
-      --hud-blur: blur(24px);
+      --text-primary: #0f0f0f;
+      --text-secondary: #606060;
       
-      --text-main: #f0f3f8;
-      --text-muted: #7d8b9e;
+      /* YOUTUBE RED AKZENTE */
+      --yt-red: #ff0000;
+      --yt-red-hover: #cc0000;
+      --yt-red-glow: rgba(255, 0, 0, 0.25);
       
-      --radius-pill: 999px;
-      --radius-card: 16px;
+      --radius-xl: 24px;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
       
-      --ease-cyber: cubic-bezier(0.16, 1, 0.3, 1);
-      --trans: all 0.4s var(--ease-cyber);
+      --shadow-liquid: 0 12px 32px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
+      --shadow-floating: 0 20px 40px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.06);
+      
+      --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --transition: all 0.4s var(--ease-apple);
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text-main); overflow: hidden; font-family: "JetBrains Mono", monospace; }
-    button, input { font: inherit; outline: none; border: none; background: transparent; }
-    button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
-    .hidden { display: none !important; opacity: 0; pointer-events: none; }
-
-    /* BACKGROUND CANVAS & MATRIX SCANLINES */
-    #ambient-canvas {
-      position: fixed;
-      inset: 0;
-      z-index: 0;
-      pointer-events: none;
-    }
-    .scanlines {
-      position: fixed;
-      inset: 0;
-      z-index: 1;
-      pointer-events: none;
-      background: linear-gradient(rgba(18, 16, 26, 0) 50%, rgba(0, 0, 0, 0.25) 50%);
-      background-size: 100% 4px;
-      opacity: 0.6;
+    /* DUNKEL-MODUS (AUTOMATISCH GEWÄHLT VOM SYSTEM) */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f0f12;
+        --bg-player: #000000;
+        --surface-glass: rgba(24, 24, 28, 0.75);
+        --surface-glass-solid: rgba(22, 22, 26, 0.94);
+        --surface-card: rgba(255, 255, 255, 0.04);
+        --surface-card-hover: rgba(255, 255, 255, 0.08);
+        
+        --border: rgba(255, 255, 255, 0.09);
+        --border-strong: rgba(255, 255, 255, 0.2);
+        
+        --text-primary: #f1f1f1;
+        --text-secondary: #aaa;
+        
+        --shadow-liquid: 0 16px 36px rgba(0, 0, 0, 0.5);
+        --shadow-floating: 0 28px 56px rgba(0, 0, 0, 0.75);
+      }
     }
 
-    /* INITIAL CYBER BOOT INTRO SCREEN */
-    #intro-screen {
+    /* =========================================================
+       KINOMODUS (KOMPLETT RADIKALES PIANO-SCHWARZ)
+       ========================================================= */
+    html.cinema-mode,
+    body.cinema-mode {
+      background: #000000 !important;
+      background-color: #000000 !important;
+      --bg: #000000 !important;
+      --bg-player: #000000 !important;
+      --surface-glass: rgba(10, 10, 10, 0.85) !important;
+      --surface-glass-solid: rgba(8, 8, 8, 0.96) !important;
+      --surface-card: rgba(255, 255, 255, 0.02) !important;
+      --surface-card-hover: rgba(255, 255, 255, 0.05) !important;
+      
+      --border: rgba(255, 255, 255, 0.04) !important;
+      --border-strong: rgba(255, 255, 255, 0.08) !important;
+      
+      --text-primary: #666666 !important;
+      --text-secondary: #333333 !important;
+      
+      --yt-red: #880000 !important;
+      --yt-red-hover: #aa0000 !important;
+      --yt-red-glow: rgba(136, 0, 0, 0.15) !important;
+      
+      --shadow-liquid: none !important;
+      --shadow-floating: 0 20px 50px rgba(0, 0, 0, 0.95) !important;
+    }
+
+    body.cinema-mode #topbar,
+    body.cinema-mode #subbar,
+    body.cinema-mode #statusbar {
+      background: #000000 !important;
+      opacity: 0.35;
+      border-color: rgba(255, 255, 255, 0.03) !important;
+      transition: opacity 0.4s var(--ease-apple);
+    }
+
+    body.cinema-mode #topbar:hover,
+    body.cinema-mode #subbar:hover,
+    body.cinema-mode #statusbar:hover {
+      opacity: 1;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text-primary);
+      overflow-x: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.4s ease, color 0.4s ease;
+    }
+    button, input { font: inherit; }
+    button { -webkit-tap-highlight-color: transparent; }
+    .hidden { display: none !important; }
+
+    /* =========================================================
+       1. NORDLICHT / AURORA INTRO OVERLAY (NETFLIX-STYLE)
+       ========================================================= */
+    #cyber-intro {
       position: fixed;
       inset: 0;
       z-index: 9999;
-      background: #020104;
+      background: #000000;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      transition: opacity 0.8s var(--ease-cyber), visibility 0.8s;
+      transition: opacity 0.8s var(--ease-apple), visibility 0.8s var(--ease-apple);
+      cursor: pointer;
+      overflow: hidden;
     }
-    #intro-screen.fade-out {
+    
+    #cyber-intro.fade-out {
       opacity: 0;
       visibility: hidden;
-    }
-    .boot-box {
-      text-align: center;
-      padding: 40px;
-      border: 1px solid var(--hud-border);
-      background: rgba(10, 6, 18, 0.8);
-      backdrop-filter: blur(20px);
-      border-radius: var(--radius-card);
-      box-shadow: 0 0 50px rgba(0, 243, 255, 0.15), inset 0 0 30px rgba(0, 243, 255, 0.05);
-      position: relative;
-      max-width: 500px;
-      width: 90%;
-    }
-    .boot-box::before {
-      content: '';
-      position: absolute;
-      top: -2px; left: -2px; right: -2px; bottom: -2px;
-      border: 1px solid var(--cyan-neon);
-      border-radius: var(--radius-card);
-      clip-path: polygon(0 0, 20px 0, 0 20px, 100% 0, 100% 20px, 0 100%, 0 calc(100% - 20px), 100% 100%);
-      opacity: 0.5;
-    }
-    .boot-logo {
-      font-family: 'Orbitron', sans-serif;
-      font-size: 38px;
-      font-weight: 900;
-      letter-spacing: 4px;
-      background: linear-gradient(135deg, #fff 0%, var(--cyan-neon) 50%, var(--red-neon) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 12px;
-      text-transform: uppercase;
-      text-shadow: 0 0 20px var(--cyan-glow);
-    }
-    .boot-status {
-      font-size: 11px;
-      color: var(--cyan-neon);
-      letter-spacing: 2px;
-      margin-bottom: 24px;
-    }
-    .boot-bar {
-      width: 100%;
-      height: 4px;
-      background: rgba(255,255,255,0.1);
-      border-radius: 2px;
-      overflow: hidden;
-      position: relative;
-      margin-bottom: 24px;
-    }
-    .boot-progress {
-      position: absolute;
-      top: 0; left: 0; bottom: 0;
-      width: 0%;
-      background: var(--cyan-grad);
-      box-shadow: 0 0 15px var(--cyan-neon);
-      transition: width 0.1s linear;
-    }
-    .btn-boot {
-      padding: 12px 36px;
-      border: 1px solid var(--cyan-neon);
-      background: rgba(0, 243, 255, 0.1);
-      color: var(--cyan-neon);
-      font-family: 'Orbitron', sans-serif;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 2px;
-      border-radius: var(--radius-pill);
-      transition: var(--trans);
-    }
-    .btn-boot:hover {
-      background: var(--cyan-neon);
-      color: #000;
-      box-shadow: 0 0 30px var(--cyan-neon);
+      pointer-events: none;
     }
 
-    /* MAIN HUD LAYOUT */
-    #hud-layout {
+    /* Nordlicht Beams */
+    .aurora-container {
+      position: absolute;
+      inset: -50%;
+      width: 200%;
+      height: 200%;
+      opacity: 0.85;
+      filter: blur(60px);
+      pointer-events: none;
+      transform: rotate(-15deg);
+    }
+
+    .aurora-beam {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-size: 200% 200%;
+      animation: auroraFlow 4s ease-in-out infinite alternate;
+    }
+
+    .aurora-beam:nth-child(1) {
+      background: linear-gradient(115deg, transparent 20%, rgba(255, 0, 76, 0.6) 40%, rgba(0, 240, 255, 0.5) 60%, transparent 80%);
+      animation-duration: 3.5s;
+    }
+
+    .aurora-beam:nth-child(2) {
+      background: linear-gradient(135deg, transparent 25%, rgba(183, 0, 255, 0.5) 45%, rgba(255, 215, 0, 0.4) 65%, transparent 85%);
+      animation-duration: 4.5s;
+      animation-delay: -1s;
+    }
+
+    .aurora-beam:nth-child(3) {
+      background: linear-gradient(105deg, transparent 30%, rgba(255, 0, 0, 0.7) 50%, rgba(0, 255, 170, 0.4) 70%, transparent 90%);
+      animation-duration: 5s;
+      animation-delay: -2s;
+    }
+
+    @keyframes auroraFlow {
+      0% { transform: translateY(-10%) scaleY(0.9) translateX(-5%); }
+      100% { transform: translateY(10%) scaleY(1.2) translateX(5%); }
+    }
+
+    .intro-content {
       position: relative;
       z-index: 10;
-      width: 100vw;
-      height: 100vh;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      padding: 18px 24px;
-      gap: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
-    /* TOPBAR HEADER HUD */
+    .intro-mark {
+      width: 64px;
+      height: 64px;
+      background: #ff0000;
+      border-radius: var(--radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      color: #ffffff;
+      margin-bottom: 24px;
+      box-shadow: 0 0 50px rgba(255, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.5);
+      animation: logoPulse 2s ease-in-out infinite alternate;
+    }
+
+    @keyframes logoPulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 30px rgba(255, 0, 0, 0.6); }
+      100% { transform: scale(1.05); box-shadow: 0 0 60px rgba(255, 0, 0, 0.9), 0 0 30px rgba(0, 240, 255, 0.6); }
+    }
+
+    .intro-title {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #ffffff;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.4);
+    }
+
+    /* =========================================================
+       2. TOPBAR & EINSTELLUNGEN POPUP
+       ========================================================= */
     #topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      z-index: 200;
-      transition: var(--trans);
+      padding: 14px 28px;
+      background: var(--surface-glass);
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      z-index: 100;
+      min-height: 68px;
     }
 
     #brand {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 10px;
-      padding: 10px 22px;
-      background: var(--hud-glass);
-      backdrop-filter: var(--hud-blur);
-      -webkit-backdrop-filter: var(--hud-blur);
-      border: 1px solid var(--hud-border-gold);
-      border-radius: var(--radius-pill);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.8), 0 0 15px rgba(255, 215, 0, 0.1);
-      font-family: 'Orbitron', sans-serif;
-      font-size: 22px;
-      font-weight: 900;
-      letter-spacing: 2px;
-      background: var(--gold-grad);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--text-primary);
       user-select: none;
+      cursor: pointer;
+      transition: transform 0.2s var(--ease-apple);
+    }
+    #brand:active {
+      transform: scale(0.96);
     }
 
-    /* DYNAMIC HERO SEARCH INPUT BOX */
-    .search-wrapper {
-      flex: 1;
-      max-width: 520px;
-      position: relative;
-      transition: var(--trans);
+    #brand::before {
+      content: '▶';
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      background: var(--yt-red);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      color: #ffffff;
+      box-shadow: 0 4px 12px var(--yt-red-glow);
     }
-    /* Hero Center Mode Position State */
-    .search-wrapper.hero-centered {
+
+    .settings-container {
+      position: relative;
+    }
+
+    .settings-menu {
+      position: absolute;
+      top: 54px;
+      right: 0;
+      width: 260px;
+      background: var(--surface-glass-solid);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      box-shadow: var(--shadow-floating);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      animation: menuPop 0.3s var(--ease-bounce);
+    }
+
+    @keyframes menuPop {
+      0% { opacity: 0; transform: scale(0.9) translateY(-10px); }
+      100% { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .settings-header {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+
+    .settings-option-group {
+      display: flex;
+      background: var(--surface-card);
+      padding: 3px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+    }
+
+    /* =========================================================
+       3. VERTIKAL & HORIZONTAL ZENTRIERTE SUCHLEISTE
+       ========================================================= */
+    #search-box-wrapper {
+      transition: var(--transition);
+      z-index: 150;
+    }
+
+    body.search-centered #player-container,
+    body.search-centered #subbar,
+    body.search-centered #statusbar {
+      filter: blur(18px) brightness(0.7);
+      transition: filter 0.5s var(--ease-apple);
+      pointer-events: none;
+    }
+
+    body.search-centered #search-box-wrapper {
       position: fixed;
-      top: 45%;
+      top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      width: min(90%, 640px);
-      max-width: none;
-      z-index: 500;
+      width: min(92vw, 640px);
+      background: var(--surface-glass-solid);
+      padding: 22px;
+      border-radius: var(--radius-xl);
+      border: 1px solid var(--border-strong);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45), var(--shadow-floating);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      animation: floatSearch 4s ease-in-out infinite alternate;
+    }
+
+    @keyframes floatSearch {
+      0% { transform: translate(-50%, -50%) translateY(0px); }
+      100% { transform: translate(-50%, -50%) translateY(-6px); }
+    }
+
+    body:not(.search-centered) #search-box-wrapper {
+      position: relative;
+      top: 0; left: 0; transform: none;
+      flex: 1; max-width: 560px;
+      background: transparent; padding: 0; border: none; box-shadow: none;
+      animation: none;
+    }
+
+    .search-input-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
     }
 
     #query-input {
-      width: 100%;
-      height: 48px;
-      padding: 0 24px;
-      border-radius: var(--radius-pill);
-      background: var(--hud-glass);
-      backdrop-filter: var(--hud-blur);
-      -webkit-backdrop-filter: var(--hud-blur);
-      border: 1px solid var(--hud-border);
-      color: #fff;
-      font-size: 13px;
-      letter-spacing: 1px;
-      transition: var(--trans);
-      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
-    }
-    .search-wrapper.hero-centered #query-input {
-      height: 60px;
-      font-size: 16px;
-      border-color: var(--cyan-neon);
-      box-shadow: 0 0 40px rgba(0, 243, 255, 0.25), 0 20px 50px rgba(0,0,0,0.9);
-      background: rgba(12, 10, 20, 0.95);
-    }
-    #query-input:focus {
-      border-color: var(--gold-neon);
-      box-shadow: 0 0 35px var(--gold-glow);
-      background: rgba(18, 14, 28, 0.95);
+      flex: 1;
+      height: 44px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      background: var(--surface-card);
+      color: var(--text-primary);
+      padding: 0 18px;
+      outline: none;
+      font-size: 14px;
+      transition: var(--transition);
     }
 
-    /* ACTION BUTTONS */
-    .btn-action-group {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+    body.search-centered #query-input {
+      height: 52px;
+      font-size: 16px;
     }
+
+    #query-input:focus {
+      border-color: var(--yt-red);
+      box-shadow: 0 0 0 3px var(--yt-red-glow);
+      background: var(--bg);
+    }
+
+    #query-input::placeholder {
+      color: var(--text-secondary);
+    }
+
+    .btn-actions { display: flex; align-items: center; gap: 10px; }
 
     .btn {
-      min-height: 46px;
+      min-height: 44px;
       padding: 0 20px;
-      border-radius: var(--radius-pill);
-      background: var(--hud-glass);
-      backdrop-filter: var(--hud-blur);
-      -webkit-backdrop-filter: var(--hud-blur);
-      border: 1px solid var(--hud-border);
-      color: var(--text-main);
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 1.5px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      cursor: pointer;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 8px;
-      transition: var(--trans);
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      color: var(--text-primary);
+      font-weight: 600;
+      font-size: 13px;
+      transition: transform 0.2s var(--ease-bounce), background-color 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+      background: var(--surface-glass);
+      backdrop-filter: blur(20px);
+      box-shadow: var(--shadow-liquid);
     }
+
+    body.search-centered #btn-search {
+      min-height: 52px;
+      padding: 0 24px;
+      background: var(--yt-red);
+      color: #ffffff;
+      border: none;
+      box-shadow: 0 8px 20px var(--yt-red-glow);
+    }
+
+    body.search-centered #btn-search:hover {
+      background: var(--yt-red-hover);
+      transform: translateY(-2px) scale(1.03);
+    }
+
     .btn:hover:not(:disabled) {
-      border-color: var(--cyan-neon);
-      box-shadow: 0 0 25px var(--cyan-glow);
-      transform: translateY(-2px);
+      transform: translateY(-2px) scale(1.02);
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-floating);
     }
+    .btn:active:not(:disabled) {
+      transform: scale(0.92);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
     .btn-primary {
-      background: var(--red-grad);
-      border-color: rgba(255, 255, 255, 0.3);
-      color: #fff;
-      box-shadow: 0 0 25px var(--red-glow);
+      background: var(--yt-red);
+      color: #ffffff;
+      border: none;
+      box-shadow: 0 8px 20px var(--yt-red-glow);
     }
     .btn-primary:hover:not(:disabled) {
-      filter: brightness(1.2);
-      box-shadow: 0 0 40px var(--red-neon);
+      background: var(--yt-red-hover);
+      box-shadow: 0 10px 25px var(--yt-red-glow);
     }
-    .btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-    /* CENTER STAGE CINEMA VIEWPORT */
+    #btn-cinema.active {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: var(--text-primary);
+      color: #ffffff;
+    }
+
+    /* =========================================================
+       4. SUBBAR / STEUERUNG BAR
+       ========================================================= */
+    #subbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 10px 28px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-glass);
+      backdrop-filter: blur(20px);
+      transition: filter 0.5s var(--ease-apple);
+    }
+
+    #preset-group, #volume-group, .subbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .subbar-label {
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      margin-right: 4px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .preset-btn, .display-mode-btn, .icon-btn {
+      border: 1px solid var(--border);
+      background: var(--surface-card);
+      color: var(--text-secondary);
+      border-radius: var(--radius-md);
+      min-height: 34px;
+      padding: 4px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: transform 0.2s var(--ease-bounce), background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+    }
+
+    .display-mode-btn { flex: 1; text-align: center; }
+
+    .preset-btn:hover, .display-mode-btn:hover, .icon-btn:hover {
+      color: var(--text-primary);
+      background: var(--surface-card-hover);
+      transform: translateY(-1px);
+    }
+
+    .preset-btn:active, .display-mode-btn:active, .icon-btn:active {
+      transform: scale(0.93);
+    }
+
+    .preset-btn.active, .display-mode-btn.active {
+      color: #ffffff;
+      background: var(--yt-red);
+      border-color: transparent;
+      box-shadow: 0 4px 12px var(--yt-red-glow);
+    }
+
+    .icon-btn { min-width: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+    #volume-slider { accent-color: var(--yt-red); cursor: pointer; width: 90px; }
+
+    /* =========================================================
+       5. YOUTUBE STYLE SEARCH PANEL
+       ========================================================= */
+    #search-panel {
+      padding: 24px 28px;
+      background: var(--surface-glass-solid);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(30px);
+    }
+    .search-panel-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    #search-heading { color: var(--text-secondary); font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+    #search-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; max-height: 480px; overflow-y: auto; }
+
+    .search-result {
+      display: flex; gap: 14px; padding: 12px;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      cursor: pointer; 
+      transition: transform 0.3s var(--ease-bounce), background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+    }
+    .search-result:hover {
+      background: var(--surface-card-hover);
+      border-color: var(--yt-red);
+      transform: translateY(-3px) scale(1.02);
+      box-shadow: var(--shadow-liquid);
+    }
+    .search-result:active {
+      transform: scale(0.96);
+    }
+
+    .search-result.selecting {
+      animation: selectZoom 0.5s var(--ease-apple) forwards;
+      z-index: 200;
+    }
+
+    @keyframes selectZoom {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.08); opacity: 0.9; box-shadow: 0 20px 50px var(--yt-red-glow); }
+      100% { transform: scale(1.15); opacity: 0; }
+    }
+
+    .search-thumbnail { width: 120px; aspect-ratio: 16/9; object-fit: cover; border-radius: var(--radius-sm); }
+
+    /* =========================================================
+       6. PLAYER CONTAINER
+       ========================================================= */
     #player-container {
       position: relative;
       width: 100%;
-      height: 100%;
-      border-radius: var(--radius-card);
-      border: 1px solid rgba(0, 243, 255, 0.2);
-      background: rgba(2, 1, 4, 0.85);
-      overflow: hidden;
+      height: min(68vh, 760px);
+      min-height: 340px;
+      background: var(--bg-player);
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 20px 80px rgba(0, 0, 0, 0.95), inset 0 0 40px rgba(0, 243, 255, 0.03);
+      overflow: hidden;
+      transition: filter 0.5s var(--ease-apple), transform 0.6s var(--ease-apple);
     }
 
-    #ascii-player, #ascii-canvas { display: none; }
-    #ascii-canvas { max-width: 100%; max-height: 100%; object-fit: contain; }
+    #player-container.expanding {
+      animation: playerExpand 0.6s var(--ease-apple) forwards;
+    }
+
+    @keyframes playerExpand {
+      0% { transform: scale(0.96); opacity: 0.8; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    #ascii-player {
+      display: none;
+      margin: 0;
+      white-space: pre;
+      color: #f5f5f7;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 10px;
+      line-height: 1;
+    }
+    #ascii-canvas { display: none; max-width: 100%; max-height: 100%; object-fit: contain; }
     #canvas-source { display: none; }
 
-    /* IDLE & MATRIX LOADING OVERLAYS */
+    /* LADEANIMATION */
+    #buffer-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 50;
+      background: rgba(10, 10, 12, 0.85);
+      backdrop-filter: blur(25px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      transition: var(--transition);
+    }
+
+    .loader-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255, 255, 255, 0.15);
+      border-top-color: var(--yt-red);
+      border-radius: 50%;
+      animation: spin 0.8s cubic-bezier(0.6, 0.2, 0.4, 0.8) infinite;
+      box-shadow: 0 0 15px var(--yt-red-glow);
+    }
+
+    .loader-text {
+      font-size: 13px;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: -0.01em;
+    }
+
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    /* IDLE OVERLAY */
     #idle-overlay {
       position: absolute;
       inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: radial-gradient(circle at center, rgba(16, 12, 28, 0.4) 0%, rgba(3, 2, 5, 0.96) 85%);
+      background: radial-gradient(circle at center, rgba(30, 30, 35, 0.3) 0%, rgba(5, 5, 7, 0.95) 85%);
       pointer-events: none;
-      text-align: center;
-      z-index: 30;
-    }
-    #idle-logo {
-      font-family: 'Orbitron', sans-serif;
-      font-size: 52px;
-      font-weight: 900;
-      letter-spacing: 4px;
-      background: var(--gold-grad);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 8px;
-    }
-    #idle-sub { color: var(--text-muted); font-size: 12px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 20px; }
-    #idle-arrow { color: var(--cyan-neon); font-size: 11px; font-weight: 700; letter-spacing: 1.5px; animation: hudPulse 1.6s ease-in-out infinite; }
-
-    /* HIGH-TECH LOADING SPINNER OVERLAY */
-    #cyber-loading {
-      position: absolute;
-      inset: 0;
-      z-index: 50;
-      background: rgba(3, 2, 5, 0.92);
-      backdrop-filter: blur(12px);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 20px;
-    }
-    .ring-spinner {
-      position: relative;
-      width: 90px;
-      height: 90px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .ring-outer {
-      position: absolute;
-      inset: 0;
-      border: 2px dashed var(--cyan-neon);
-      border-radius: 50%;
-      animation: spin 6s linear infinite;
-    }
-    .ring-inner {
-      position: absolute;
-      inset: 12px;
-      border: 2px solid var(--red-neon);
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 1.5s linear infinite reverse;
-    }
-    .ring-center {
-      width: 12px;
-      height: 12px;
-      background: var(--gold-neon);
-      border-radius: 50%;
-      box-shadow: 0 0 15px var(--gold-neon);
-    }
-    .loading-text {
-      font-family: 'Orbitron', sans-serif;
-      font-size: 13px;
-      color: var(--cyan-neon);
-      letter-spacing: 3px;
     }
 
-    /* PLAYBACK CONTROLS DOCK OVERLAY */
+    /* TOUCH-OPTIMIERTE PLAYBACK CONTROLS */
     .playback-controls {
       position: absolute;
-      bottom: 20px;
+      bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
-      width: min(90%, 650px);
-      padding: 10px 22px;
-      background: rgba(8, 6, 14, 0.88);
-      backdrop-filter: blur(20px);
-      border: 1px solid var(--hud-border-gold);
-      border-radius: var(--radius-pill);
+      width: min(90%, 720px);
       display: flex;
       align-items: center;
-      gap: 14px;
-      z-index: 100;
-      box-shadow: 0 20px 50px rgba(0,0,0,0.9), 0 0 20px rgba(255, 215, 0, 0.1);
-    }
-    .playback-pause {
-      color: var(--gold-neon);
-      font-size: 16px;
-      transition: var(--trans);
-    }
-    .playback-pause:hover { transform: scale(1.2); text-shadow: 0 0 10px var(--gold-neon); }
-    .playback-time { font-size: 11px; font-weight: 700; color: var(--text-muted); }
-    .playback-progress {
-      flex: 1;
-      accent-color: var(--red-neon);
-      cursor: pointer;
-      height: 4px;
-    }
-    .playback-live { color: #fff; background: var(--red-neon); padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 800; box-shadow: 0 0 10px var(--red-glow); }
-
-    /* SEARCH PANEL OVERLAY */
-    #search-panel {
-      position: absolute;
-      inset: 16px;
-      z-index: 250;
-      background: rgba(6, 4, 10, 0.95);
-      backdrop-filter: blur(36px);
-      border-radius: var(--radius-card);
-      border: 1px solid var(--hud-border);
-      padding: 24px;
-      overflow-y: auto;
-    }
-    .search-panel-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-    #search-heading { font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 900; color: var(--cyan-neon); letter-spacing: 2px; }
-    #search-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
-
-    .search-result {
-      display: flex; gap: 12px; padding: 12px;
-      background: rgba(18, 14, 26, 0.6);
-      border: 1px solid rgba(0, 243, 255, 0.15);
-      border-radius: 12px;
-      cursor: pointer; transition: var(--trans);
-    }
-    .search-result:hover {
-      background: rgba(30, 22, 42, 0.85);
-      border-color: var(--cyan-neon);
-      transform: translateY(-3px);
-      box-shadow: 0 10px 25px rgba(0,0,0,0.8), 0 0 20px var(--cyan-glow);
-    }
-    .search-thumbnail { width: 110px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; }
-
-    /* BOTTOM FLOATING CONTROL DOCK (SUBBAR) */
-    #subbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
       gap: 16px;
-      padding: 10px 24px;
-      background: var(--hud-glass);
-      backdrop-filter: var(--hud-blur);
-      -webkit-backdrop-filter: var(--hud-blur);
-      border: 1px solid var(--hud-border);
-      border-radius: var(--radius-pill);
-      box-shadow: 0 20px 40px rgba(0,0,0,0.8);
-      z-index: 200;
+      padding: 12px 20px;
+      background: var(--surface-glass-solid);
+      backdrop-filter: blur(30px);
+      border: 1px solid var(--border);
+      border-radius: 40px;
+      z-index: 40;
+      box-shadow: var(--shadow-floating);
     }
 
-    .subbar-group { display: flex; align-items: center; gap: 8px; }
-    .subbar-label { font-size: 10px; font-weight: 800; color: var(--gold-neon); letter-spacing: 2px; }
-
-    .preset-btn, .display-mode-btn, .icon-btn {
-      padding: 6px 14px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--hud-border);
-      background: rgba(0, 0, 0, 0.4);
-      color: var(--text-muted);
-      font-size: 10px;
-      font-weight: 800;
-      transition: var(--trans);
+    .playback-pause {
+      background: var(--yt-red);
+      border: none;
+      color: #ffffff;
+      width: 48px;
+      height: 48px;
+      min-width: 48px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 6px 18px var(--yt-red-glow);
+      transition: transform 0.2s var(--ease-bounce), background-color 0.2s ease, box-shadow 0.2s ease;
+      touch-action: manipulation;
     }
-    .preset-btn:hover, .display-mode-btn:hover, .icon-btn:hover {
-      border-color: var(--cyan-neon);
-      color: var(--text-main);
+
+    .playback-pause:hover {
+      background: var(--yt-red-hover);
+      transform: scale(1.08);
+      box-shadow: 0 8px 24px var(--yt-red-glow);
     }
-    .preset-btn.active, .display-mode-btn.active {
-      background: var(--cyan-grad);
-      color: #000;
-      border-color: transparent;
-      box-shadow: 0 0 15px var(--cyan-glow);
+
+    .playback-pause:active {
+      transform: scale(0.9);
     }
-    .subbar-hint { font-size: 10px; color: var(--gold-neon); opacity: 0.8; }
-    #volume-slider { accent-color: var(--cyan-neon); width: 85px; cursor: pointer; }
 
-    /* STATUSBAR FOOTER */
-    #statusbar { display: flex; align-items: center; gap: 12px; font-size: 10px; color: var(--text-muted); }
-    .status-segment { font-weight: 600; }
-    .status-state { color: var(--gold-neon); }
-    .live-badge { color: #fff; background: var(--red-neon); padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 9px; box-shadow: 0 0 10px var(--red-glow); }
+    .playback-time { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+    .playback-progress { flex: 1; accent-color: var(--yt-red); cursor: pointer; height: 8px; }
+    .playback-live { color: #ffffff; background: var(--yt-red); padding: 3px 10px; border-radius: 6px; font-size: 10px; font-weight: 700; }
 
-    @keyframes spin { 100% { transform: rotate(360deg); } }
-    @keyframes hudPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+    /* STATUSBAR */
+    #statusbar {
+      display: flex; align-items: center; gap: 16px; padding: 12px 28px;
+      background: var(--bg); color: var(--text-secondary); font-size: 12px;
+      transition: filter 0.5s var(--ease-apple);
+    }
+    #status-title { flex: 1; color: var(--text-primary); font-weight: 500; }
+    .live-badge { color: white; background: var(--yt-red); padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 10px; }
 
-    /* RESPONSIVE BREAKPOINTS */
-    @media (max-width: 900px) {
-      #hud-layout { padding: 10px; gap: 10px; }
-      #topbar { flex-wrap: wrap; }
-      .search-wrapper { max-width: 100%; order: 3; }
-      #subbar { flex-direction: column; border-radius: var(--radius-card); padding: 14px; }
-      #statusbar { flex-wrap: wrap; justify-content: center; }
+    @media (max-width: 768px) {
+      body.search-centered #search-box-wrapper { width: 92vw; top: 50%; }
+      #topbar { padding: 14px 16px; }
+      .search-input-group { flex-direction: column; }
+      #query-input, .btn { width: 100%; }
+      #subbar { padding: 10px 16px; }
+      .playback-pause { width: 52px; height: 52px; min-width: 52px; font-size: 18px; }
     }
   </style>
 </head>
-<body>
+<body class="search-centered">
 
-  <!-- BACKGROUND MATRIX PARTICLES -->
-  <canvas id="ambient-canvas"></canvas>
-  <div class="scanlines"></div>
-
-  <!-- CYBER BOOT INTRO SCREEN -->
-  <div id="intro-screen">
-    <div class="boot-box">
-      <div class="boot-logo">Cyber.cinema</div>
-      <div class="boot-status" id="boot-status-text">INITIALIZING QUANTUM MATRIX...</div>
-      <div class="boot-bar"><div class="boot-progress" id="boot-progress"></div></div>
-      <button class="btn-boot" id="btn-start-system" onclick="dismissIntro()">ENTER SYSTEM</button>
+  <!-- 1. NORDLICHT / AURORA INTRO OVERLAY -->
+  <div id="cyber-intro" onclick="closeIntro()">
+    <div class="aurora-container">
+      <div class="aurora-beam"></div>
+      <div class="aurora-beam"></div>
+      <div class="aurora-beam"></div>
+    </div>
+    <div class="intro-content">
+      <div class="intro-mark">▶</div>
+      <div class="intro-title">Cyber.cinema</div>
     </div>
   </div>
 
-  <!-- MAIN HUD INTERFACE LAYOUT -->
-  <div id="hud-layout">
+  <!-- 2. TOPBAR HEADER MIT SETTINGS ICON & POPUP -->
+  <header id="topbar">
+    <div id="brand" onclick="document.body.classList.add('search-centered')">Cyber.cinema</div>
+
+    <!-- DYNAMISCHE SUCHLEISTE -->
+    <div id="search-box-wrapper">
+      <div class="search-input-group">
+        <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="YouTube Video suchen oder URL..." aria-label="Video suchen">
+        <button id="btn-search" class="btn btn-secondary" type="button" aria-label="YouTube suchen"><span class="btn-icon">⌕</span><span class="btn-label">Suchen</span></button>
+      </div>
+    </div>
+
+    <div class="btn-actions">
+      <button id="btn-play" class="btn btn-primary" aria-label="Play"><span class="btn-icon">▶</span><span class="btn-label">Play</span></button>
+      <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled><span class="btn-icon">■</span><span class="btn-label">Stop</span></button>
+      
+      <!-- SETTINGS BUTTON & DROPDOWN POPUP -->
+      <div class="settings-container">
+        <button id="btn-settings" class="btn btn-secondary icon-btn" type="button" aria-label="Einstellungen" title="Einstellungen">⚙️</button>
+        <div id="settings-menu" class="settings-menu hidden">
+          <div class="settings-header">Darstellungsmodus</div>
+          <div id="display-mode-group" class="settings-option-group" role="group" aria-label="Darstellungsmodus">
+            <button class="display-mode-btn" data-display-mode="ascii" type="button">ASCII</button>
+            <button class="display-mode-btn active" data-display-mode="canvas" type="button">Canvas</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 3. CONTROL SUBBAR MIT KINOMODUS BUTTON -->
+  <div id="subbar">
+    <div id="preset-group" role="group" aria-label="Qualität"><span class="subbar-label">Qualität</span><button class="preset-btn active" data-preset="low">Low</button><button class="preset-btn" data-preset="med">Med</button><button class="preset-btn" data-preset="high">High</button></div>
+    <div id="preset-hint" class="subbar-hint hidden">Änderungen werden beim nächsten Play übernommen</div>
     
-    <!-- TOPBAR HEADER MODULE -->
-    <header id="topbar">
-      <div id="brand">CYBER.CINEMA</div>
-      
-      <!-- HERO SEARCH CONTAINER (Starts centered, shifts to topbar) -->
-      <div class="search-wrapper hero-centered" id="search-wrapper">
-        <input id="query-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="YouTube-Video oder ID suchen …" aria-label="Video suchen">
-      </div>
-      
-      <div class="btn-action-group">
-        <button id="btn-search" class="btn btn-secondary" type="button" aria-label="YouTube suchen"><span class="btn-icon">⌕</span><span class="btn-label">SUCHEN</span></button>
-        <button id="btn-play" class="btn btn-primary" aria-label="Play"><span class="btn-icon">▶</span><span class="btn-label">PLAY</span></button>
-        <button id="btn-stop" class="btn btn-secondary" aria-label="Stop" disabled><span class="btn-icon">■</span><span class="btn-label">STOP</span></button>
-      </div>
-    </header>
+    <div class="subbar-actions">
+      <!-- KINOMODUS BUTTON -->
+      <button id="btn-cinema" class="preset-btn" type="button" title="Kinomodus umschalten">🎬 Kinomodus</button>
+      <div id="volume-group"><span class="subbar-label">Lautstärke</span><button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button><input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume"></div>
+    </div>
+  </div>
 
-    <!-- YOUTUBE SEARCH PANEL -->
-    <section id="search-panel" class="hidden" aria-label="YouTube-Suchergebnisse">
-      <div class="search-panel-top">
-        <div id="search-heading">CYBER SEARCH MATRIX</div>
-        <button id="btn-close-search" class="icon-btn" type="button" aria-label="Suchergebnisse schließen">✕</button>
-      </div>
-      <div id="search-message" role="status" aria-live="polite"></div>
-      <div id="search-results"></div>
-    </section>
+  <!-- 4. SEARCH RESULTS PANEL -->
+  <section id="search-panel" class="hidden" aria-label="YouTube-Suchergebnisse">
+    <div class="search-panel-top">
+      <div id="search-heading">Suchergebnisse</div>
+      <button id="btn-close-search" class="icon-btn" type="button" aria-label="Suchergebnisse schließen">✕</button>
+    </div>
+    <div id="search-message" role="status" aria-live="polite"></div>
+    <div id="search-results"></div>
+  </section>
 
-    <!-- CENTER STAGE PLAYER CONTAINER -->
-    <main id="player-container">
-      <pre id="ascii-player"></pre>
-      <canvas id="ascii-canvas"></canvas>
-      <video id="canvas-source" playsinline preload="auto" aria-hidden="true"></video>
-      
-      <!-- IDLE OVERLAY -->
-      <div id="idle-overlay">
-        <div id="idle-content">
-          <div id="idle-logo">CYBER.CINEMA</div>
-          <div id="idle-sub">HIGH FREQUENCY ASCII / CANVAS STREAMING</div>
-          <div id="idle-arrow">↑ Video-ID / Link eingeben & STARTEN</div>
-        </div>
-      </div>
+  <!-- 5. KINO PLAYER CONTAINER WITH ALL ORIGINAL HTML NODES -->
+  <main id="player-container">
+    <pre id="ascii-player"></pre>
+    <canvas id="ascii-canvas"></canvas>
+    <video id="canvas-source" playsinline preload="auto" aria-hidden="true"></video>
 
-      <!-- CYBER RING BUFFERING / LOADING OVERLAY -->
-      <div id="cyber-loading" class="hidden">
-        <div class="ring-spinner">
-          <div class="ring-outer"></div>
-          <div class="ring-inner"></div>
-          <div class="ring-center"></div>
-        </div>
-        <div class="loading-text" id="loading-status-text">CONNECTING QUANTUM STREAM...</div>
-      </div>
-
-      <!-- PLAYBACK CONTROLS OVERLAY -->
-      <div id="playback-controls" class="playback-controls hidden" aria-label="Videosteuerung">
-        <button id="btn-pause" class="playback-pause" type="button" aria-label="Pause" title="Pause">Ⅱ</button>
-        <span id="playback-current-time" class="playback-time">0:00</span>
-        <input id="playback-progress" class="playback-progress" type="range" min="0" max="1000" step="1" value="0" aria-label="Video-Fortschritt" title="Zum Zeitpunkt springen">
-        <span id="playback-duration" class="playback-time">0:00</span>
-        <span id="playback-live" class="playback-live hidden">● LIVE</span>
-      </div>
-    </main>
-
-    <!-- BOTTOM FLOATING HUD CONTROL DOCK -->
-    <div id="subbar">
-      <div id="preset-group" class="subbar-group" role="group" aria-label="Qualität">
-        <span class="subbar-label">PRESET</span>
-        <button class="preset-btn active" data-preset="low">LOW</button>
-        <button class="preset-btn" data-preset="med">MED</button>
-        <button class="preset-btn" data-preset="high">HIGH</button>
-      </div>
-
-      <div id="display-mode-group" class="subbar-group" role="group" aria-label="Darstellungsmodus">
-        <span class="subbar-label">MODUS</span>
-        <button class="display-mode-btn" data-display-mode="ascii" type="button">ASCII</button>
-        <button class="display-mode-btn active" data-display-mode="canvas" type="button">CANVAS</button>
-      </div>
-
-      <div id="preset-hint" class="subbar-hint hidden">Änderungen werden beim nächsten PLAY übernommen</div>
-
-      <div id="volume-group" class="subbar-group">
-        <span class="subbar-label">VOL</span>
-        <button id="btn-mute" class="icon-btn" aria-label="Toggle mute">🔊</button>
-        <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Volume">
-      </div>
-
-      <!-- STATUSBAR FOOTER -->
-      <footer id="statusbar">
-        <span id="status-title" class="status-segment"></span>
-        <span id="status-live" class="live-badge hidden">● LIVE</span>
-        <span id="status-state" class="status-segment status-state">SYSTEM READY</span>
-        <span id="status-fps" class="status-segment status-fps"></span>
-        <span id="status-perf-hint" class="status-segment status-perf hidden">↓ Lower preset recommended</span>
-      </footer>
+    <!-- CLEAN LADEANIMATION MIT ROTEM SPINNER -->
+    <div id="buffer-overlay" class="hidden">
+      <div class="loader-spinner"></div>
+      <div class="loader-text" id="buffer-text">Video wird geladen…</div>
     </div>
 
-  </div>
+    <!-- IDLE SCREEN -->
+    <div id="idle-overlay"></div>
+
+    <!-- TOUCH-OPTIMIERTE PLAYBACK CONTROLS -->
+    <div id="playback-controls" class="playback-controls hidden" aria-label="Videosteuerung">
+      <button id="btn-pause" class="playback-pause" type="button" aria-label="Pause" title="Pause">Ⅱ</button>
+      <span id="playback-current-time" class="playback-time">0:00</span>
+      <input id="playback-progress" class="playback-progress" type="range" min="0" max="1000" step="1" value="0" aria-label="Video-Fortschritt" title="Zum Zeitpunkt springen">
+      <span id="playback-duration" class="playback-time">0:00</span>
+      <span id="playback-live" class="playback-live hidden">● LIVE</span>
+    </div>
+  </main>
+
+  <!-- 6. STATUSBAR -->
+  <footer id="statusbar">
+    <span id="status-title" class="status-segment">powered by ODIP.net</span>
+    <span id="status-live" class="live-badge hidden">● LIVE</span>
+    <span id="status-state" class="status-segment status-state">IDLE</span>
+    <span id="status-fps" class="status-segment status-fps"></span>
+    <span id="status-perf-hint" class="status-segment status-perf hidden">↓ try a lower preset</span>
+  </footer>
 
   <audio id="ascii-audio" preload="auto"></audio>
 
-  <!-- CYBER ANIMATIONS & INTERACTION SCRIPT -->
+  <!-- CONTROL & ANIMATION SCRIPT -->
   <script>
-    // INTRO BOOT SEQUENCE
-    let progress = 0;
-    const progressBar = document.getElementById('boot-progress');
-    const bootStatus = document.getElementById('boot-status-text');
-    const statusMessages = [
-      "INITIALIZING QUANTUM MATRIX...",
-      "LOADING HUD SHADERS...",
-      "ESTABLISHING HIGH FREQUENCY LINK...",
-      "CYBER.CINEMA READY"
-    ];
-
-    const bootInterval = setInterval(() => {
-      progress += 4;
-      if(progressBar) progressBar.style.width = progress + '%';
-      if(progress > 30 && progress < 60) bootStatus.innerText = statusMessages[1];
-      if(progress >= 60 && progress < 90) bootStatus.innerText = statusMessages[2];
-      if(progress >= 100) {
-        clearInterval(bootInterval);
-        bootStatus.innerText = statusMessages[3];
+    function closeIntro() {
+      const intro = document.getElementById('cyber-intro');
+      if (intro && !intro.classList.contains('fade-out')) {
+        intro.classList.add('fade-out');
       }
-    }, 40);
-
-    function dismissIntro() {
-      const intro = document.getElementById('intro-screen');
-      if(intro) intro.classList.add('fade-out');
     }
 
-    // DYNAMIC HERO SEARCH TRANSITION
-    const searchWrapper = document.getElementById('search-wrapper');
-    const queryInput = document.getElementById('query-input');
+    document.addEventListener('DOMContentLoaded', () => {
+      // Auto Fadeout Intro
+      setTimeout(closeIntro, 2500);
 
-    if(queryInput && searchWrapper) {
-      queryInput.addEventListener('focus', () => {
-        searchWrapper.classList.remove('hero-centered');
-      });
-    }
-
-    // MATRIX PARTICLES BACKGROUND CANVAS
-    const bgCanvas = document.getElementById('ambient-canvas');
-    if(bgCanvas) {
-      const ctx = bgCanvas.getContext('2d');
-      let width = bgCanvas.width = window.innerWidth;
-      let height = bgCanvas.height = window.innerHeight;
-
-      window.addEventListener('resize', () => {
-        width = bgCanvas.width = window.innerWidth;
-        height = bgCanvas.height = window.innerHeight;
-      });
-
-      const particles = Array.from({ length: 40 }, () => ({
-        x: Math.random() * width,
-        y: Math.random() * height,
-        radius: Math.random() * 1.5 + 0.5,
-        vx: (Math.random() - 0.5) * 0.4,
-        vy: (Math.random() - 0.5) * 0.4,
-        color: Math.random() > 0.5 ? 'rgba(0, 243, 255, ' : 'rgba(255, 0, 85, '
-      }));
-
-      function renderParticles() {
-        ctx.clearRect(0, 0, width, height);
-        particles.forEach(p => {
-          p.x += p.vx;
-          p.y += p.vy;
-          if (p.x < 0 || p.x > width) p.vx *= -1;
-          if (p.y < 0 || p.y > height) p.vy *= -1;
-
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-          ctx.fillStyle = p.color + '0.4)';
-          ctx.fill();
+      const input = document.getElementById('query-input');
+      const searchBtn = document.getElementById('btn-search');
+      const closeSearchBtn = document.getElementById('btn-close-search');
+      const bufferOverlay = document.getElementById('buffer-overlay');
+      const bufferText = document.getElementById('buffer-text');
+      const statusState = document.getElementById('status-state');
+      const searchResults = document.getElementById('search-results');
+      const playerContainer = document.getElementById('player-container');
+      
+      // Kinomodus Button Logik (Funktioniert für body + html)
+      const btnCinema = document.getElementById('btn-cinema');
+      if (btnCinema) {
+        btnCinema.addEventListener('click', () => {
+          document.documentElement.classList.toggle('cinema-mode');
+          document.body.classList.toggle('cinema-mode');
+          btnCinema.classList.toggle('active');
         });
-        requestAnimationFrame(renderParticles);
       }
-      renderParticles();
-    }
+
+      // Settings Popover Logik
+      const btnSettings = document.getElementById('btn-settings');
+      const settingsMenu = document.getElementById('settings-menu');
+
+      if (btnSettings && settingsMenu) {
+        btnSettings.addEventListener('click', (e) => {
+          e.stopPropagation();
+          settingsMenu.classList.toggle('hidden');
+        });
+
+        document.addEventListener('click', (e) => {
+          if (!settingsMenu.contains(e.target) && e.target !== btnSettings) {
+            settingsMenu.classList.add('hidden');
+          }
+        });
+      }
+
+      function triggerSearchMove() {
+        if (document.body.classList.contains('search-centered')) {
+          document.body.classList.remove('search-centered');
+        }
+      }
+
+      input.addEventListener('focus', triggerSearchMove);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') triggerSearchMove();
+      });
+      searchBtn.addEventListener('click', triggerSearchMove);
+
+      if (closeSearchBtn) {
+        closeSearchBtn.addEventListener('click', () => {
+          if (!input.value.trim()) {
+            document.body.classList.add('search-centered');
+          }
+        });
+      }
+
+      // Klick auf ein Suchergebnis -> Zoom-Animation & Player-Vergrößerung
+      if (searchResults) {
+        searchResults.addEventListener('click', (e) => {
+          const card = e.target.closest('.search-result');
+          if (card) {
+            card.classList.add('selecting');
+            playerContainer.classList.add('expanding');
+            setTimeout(() => {
+              playerContainer.classList.remove('expanding');
+            }, 600);
+          }
+        });
+      }
+
+      // Status Observer für Buffer-Zustände
+      const observer = new MutationObserver(() => {
+        const state = statusState.textContent.toUpperCase();
+        if (state.includes('RESOLVING') || state.includes('LOADING') || state.includes('BUFFERING')) {
+          bufferOverlay.classList.remove('hidden');
+          bufferText.textContent = state.includes('RESOLVING') ? 'URL wird aufgelöst…' : 'Video wird geladen…';
+        } else {
+          bufferOverlay.classList.add('hidden');
+        }
+      });
+
+      if (statusState) {
+        observer.observe(statusState, { childList: true, characterData: true, subtree: true });
+      }
+    });
   </script>
 
-  <!-- APPLICATION CORE SCRIPT -->
   <script src="/static/app.js?v=native-controls1"></script>
 </body>
 </html>
