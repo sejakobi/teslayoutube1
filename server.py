@@ -218,23 +218,42 @@ async def audio_stream(request: Request):
 
 
 def _native_mp4_command(session: Session) -> list[str]:
-    """Create a video-only fragmented MP4 for the offscreen Canvas decoder.
+    """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
 
-    Audio is streamed independently through /audio; no audio track is muxed
-    into the image transport.
+    No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
+    fragmented MP4 so the browser can decode them natively while JavaScript
+    draws each decoded frame to the visible Canvas.
     """
     media = session.media
     if media is None:
         raise ValueError("media is not ready")
-    return [
+
+    cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
         *_ffmpeg_input_header_args(media.video_headers),
         "-i", media.video_url,
-        "-map", "0:v:0", "-an", "-sn", "-dn", "-c:v", "copy",
-        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-        "-flush_packets", "1", "-f", "mp4", "pipe:1",
     ]
+    if media.audio_url:
+        cmd.extend([
+            "-thread_queue_size", "512",
+            *_ffmpeg_input_header_args(media.audio_headers),
+            "-i", media.audio_url,
+            "-map", "0:v:0", "-map", "1:a:0",
+        ])
+    else:
+        # Optional audio map means a progressive video-only format still works,
+        # while muxed MP4 sources keep their original audio track.
+        cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+
+    cmd.extend([
+        "-c:v", "copy", "-c:a", "copy",
+        "-sn", "-dn",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        "-flush_packets", "1",
+        "-f", "mp4", "pipe:1",
+    ])
+    return cmd
 
 
 async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:

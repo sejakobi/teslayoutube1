@@ -91,7 +91,7 @@ class SessionManager:
                 resolve,
                 query,
                 requested_height,
-                prefer_native=(session.display_mode == "canvas"),
+                prefer_native=False,
             )
         except ResolverError as exc:
             async with self._lock:
@@ -108,38 +108,45 @@ class SessionManager:
             pipeline = None
             audio_pipeline = None
 
-            if session.display_mode != "canvas":
-                preset_cfg = PRESETS.get(preset_name) or PRESETS[DEFAULT_PRESET]
-                preset = PresetSpec(
-                    cols=preset_cfg["cols"],
-                    rows=preset_cfg["rows"],
-                    fps_cap=preset_cfg["fps_cap"],
-                    mode=preset_cfg["mode"],
+            preset_cfg = PRESETS.get(preset_name) or PRESETS[DEFAULT_PRESET]
+            preset = PresetSpec(
+                cols=preset_cfg["cols"],
+                rows=preset_cfg["rows"],
+                fps_cap=preset_cfg["fps_cap"],
+                mode=preset_cfg["mode"],
+            )
+
+            if session.display_mode == "canvas":
+                canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
+                pipeline = VideoPipeline(
+                    media.video_url,
+                    preset,
+                    headers=media.video_headers,
+                    display_mode="canvas",
+                    frame_width=int(canvas_cfg["width"]),
+                    frame_height=int(canvas_cfg["height"]),
+                    fps_cap=int(canvas_cfg["fps_cap"]),
+                    jpeg_quality=int(canvas_cfg.get("jpeg_quality", 75)),
                 )
+            else:
                 pipeline = VideoPipeline(
                     media.video_url,
                     preset,
                     headers=media.video_headers,
                     display_mode="ascii",
                 )
-                pipeline.start()
+            pipeline.start()
 
-                # ASCII mode keeps its existing independent MP3 audio stream.
-                audio_src = media.audio_url if media.audio_url else media.video_url
-                audio_headers = media.audio_headers if media.audio_url else media.video_headers
-                audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
-                audio_pipeline.start()
-            else:
-                # Canvas video and audio use independent transports. The browser
-                # paints decoded video frames onto the visible Canvas while the
-                # MP3 audio stream is delivered by /audio.
-                audio_src = media.audio_url if media.audio_url else media.video_url
-                audio_headers = media.audio_headers if media.audio_url else media.video_headers
-                audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
-                audio_pipeline.start()
+            # Both modes use a separate MP3 stream; Canvas video is delivered
+            # as indexed JPEG frames over /ws/video and painted into <canvas>.
+            audio_src = media.audio_url if media.audio_url else media.video_url
+            audio_headers = media.audio_headers if media.audio_url else media.video_headers
+            audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
+            audio_pipeline.start()
+            if session.display_mode == "canvas":
                 log.info(
-                    "session %s: native Canvas selected max_height=%d format=%s; separate audio started",
-                    session_id, requested_height, media.format_note,
+                    "session %s: WebSocket Canvas selected %dx%d @ %dfps; separate audio started",
+                    session_id, int(canvas_cfg["width"]), int(canvas_cfg["height"]), int(canvas_cfg["fps_cap"]),
                 )
 
             session.media = media

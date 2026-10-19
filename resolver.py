@@ -111,11 +111,8 @@ def _ydl_opts(
         "extract_flat": False,
         "noplaylist": True,
         "socket_timeout": 30,
-        "retries": 1,
-        "extractor_retries": 1,
-        "sleep_interval_requests": 2,
-        "sleep_interval": 5,
-        "max_sleep_interval": 10,
+        "retries": 2,
+        "extractor_retries": 2,
         # Use the normal/current yt-dlp YouTube client selection instead of
         # hard-coding tv/web_safari/android, which can yield no player data.
         # The EJS scripts are included by the yt-dlp[default] extra.
@@ -163,36 +160,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
                 cookie_file.write(cookie_bytes)
                 cookie_path = cookie_file.name
 
-            # Safe diagnostics: log only structural information, never cookie values.
-            import logging
-
-            logger = logging.getLogger("resolver")
-            try:
-                cookie_text = cookie_bytes.decode("utf-8-sig")
-                lines = cookie_text.splitlines()
-                has_netscape_header = any(
-                    line.strip() in (
-                        "# Netscape HTTP Cookie File",
-                        "# HTTP Cookie File",
-                    )
-                    for line in lines[:10]
-                )
-                cookie_lines = [
-                    line for line in lines
-                    if line.strip()
-                    and not line.lstrip().startswith("#")
-                    and len(line.split("\t")) >= 7
-                ]
-                logger.info(
-                    "YouTube-Cookie-Diagnose: Netscape-Header=%s, Cookie-Zeilen=%d",
-                    has_netscape_header,
-                    len(cookie_lines),
-                )
-            except (UnicodeDecodeError, ValueError):
-                logger.warning(
-                    "YouTube-Cookie-Diagnose: Datei ist nicht als UTF-8 lesbar."
-                )
-
         opts = _ydl_opts(max_height, deno_path, prefer_native)
         if cookie_path:
             opts["cookiefile"] = cookie_path
@@ -237,19 +204,7 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
         raise
 
     except yt_dlp.utils.DownloadError as exc:
-        # A 429 is a server-side rate limit. Do not retry through another
-        # search path or hide it behind a generic extraction error.
-        message = str(exc)
-        if "429" in message or "too many requests" in message.lower():
-            raise ResolverError(
-                "YouTube begrenzt momentan die Anfragen dieses Servers (HTTP 429). "
-                "Weitere automatische Versuche wurden nicht gestartet. Warte, bevor "
-                "du es erneut versuchst, und prüfe die yt-dlp-Version sowie die "
-                "Gültigkeit der konfigurierten Cookies. Wenn der Fehler bestehen "
-                "bleibt, kann die Drosselung an der Render-IP liegen; das lässt sich "
-                "nicht zuverlässig durch Änderungen an den Wiederholungsversuchen beheben."
-            ) from exc
-        raise ResolverError(message) from exc
+        raise ResolverError(str(exc)) from exc
 
     except Exception as exc:
         raise ResolverError(
