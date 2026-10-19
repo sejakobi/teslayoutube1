@@ -37,8 +37,8 @@ class ResolvedMedia:
     format_note: str
 
 
-def _ydl_opts(max_height: int) -> dict:
-    """Build yt-dlp options with flexible format fallbacks."""
+def _ydl_opts(max_height: int, player_clients: list[str]) -> dict:
+    """Build yt-dlp options for a specific YouTube player-client profile."""
 
     fmt = (
         f"bestvideo[height<={max_height}]+bestaudio"
@@ -53,7 +53,7 @@ def _ydl_opts(max_height: int) -> dict:
         "extract_flat": False,
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv", "web_safari"],
+                "player_client": player_clients,
             }
         },
         "noplaylist": True,
@@ -65,7 +65,6 @@ def _ydl_opts(max_height: int) -> dict:
 def _extract(url: str, max_height: int) -> dict:
     """Extract video metadata and stream URLs using optional cookies."""
 
-    opts = _ydl_opts(max_height)
     cookie_path = None
 
     try:
@@ -98,10 +97,39 @@ def _extract(url: str, max_height: int) -> dict:
                 cookie_file.write(cookie_bytes)
                 cookie_path = cookie_file.name
 
-            opts["cookiefile"] = cookie_path
+        # YouTube has recently changed which player clients expose playable
+        # formats. Try the current default clients first, then narrow profiles
+        # if yt-dlp reports that the selected format is unavailable.
+        client_profiles = (
+            ["default", "web_safari"],
+            ["default"],
+            ["android"],
+        )
+        info = None
+        last_download_error = None
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        for profile_index, player_clients in enumerate(client_profiles):
+            opts = _ydl_opts(max_height, player_clients)
+            if cookie_path:
+                opts["cookiefile"] = cookie_path
+
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break
+            except yt_dlp.utils.DownloadError as exc:
+                last_download_error = exc
+                message = str(exc).lower()
+                is_format_error = (
+                    "requested format is not available" in message
+                    or "no video formats found" in message
+                    or "only images are available" in message
+                )
+                if not is_format_error or profile_index == len(client_profiles) - 1:
+                    raise
+
+        if info is None and last_download_error is not None:
+            raise last_download_error
 
         if info is None:
             raise ResolverError(
