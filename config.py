@@ -24,7 +24,7 @@ PRESETS = {
     },
 }
 
-DEFAULT_PRESET = "low"
+DEFAULT_PRESET = "med"
 
 SERVER_DEFAULTS = {
     "port": 8000,
