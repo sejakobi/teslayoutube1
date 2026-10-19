@@ -14,6 +14,10 @@ const btnCloseSearch  = document.getElementById('btn-close-search');
 const searchPanel     = document.getElementById('search-panel');
 const searchResults   = document.getElementById('search-results');
 const searchMessage   = document.getElementById('search-message');
+const searchTabVideos  = document.getElementById('search-tab-videos');
+const searchTabChannels = document.getElementById('search-tab-channels');
+const btnLoadMore      = document.getElementById('btn-load-more');
+const btnBackChannels  = document.getElementById('btn-back-channels');
 const btnStop         = document.getElementById('btn-stop');
 const presetBtns      = document.querySelectorAll('.preset-btn');
 const displayModeBtns = document.querySelectorAll('.display-mode-btn');
@@ -986,53 +990,198 @@ const flushSelectionLayer = () => {
 asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
 document.addEventListener('copy', flushSelectionLayer);
 
-// ───────── YouTube Data API search ─────────
+// ───────── YouTube Data API search and channel browsing ─────────
 let searchRequestId = 0;
+let currentSearchType = 'video';
+let searchNextPageToken = '';
+let searchItemCount = 0;
+let activeSearchParams = { q: '', search_type: 'video' };
+let searchView = 'search'; // search | channel
+let savedChannelSearchQuery = '';
+let activeChannel = null;
 
-async function doSearch() {
-    const query = queryInput.value.trim();
-    if (!query) { queryInput.focus(); return; }
+function updateSearchChrome() {
+    const heading = document.getElementById('search-heading');
+    const tabs = document.getElementById('search-tabs');
+    const channelMode = searchView === 'channel';
+    if (heading) heading.textContent = channelMode ? `KANALVIDEOS · ${activeChannel?.title || 'YouTube-Kanal'}` : 'YOUTUBE-SUCHERGEBNISSE';
+    if (tabs) tabs.classList.toggle('hidden', channelMode);
+    if (btnBackChannels) btnBackChannels.classList.toggle('hidden', !channelMode);
+    if (searchTabVideos) searchTabVideos.classList.toggle('active', !channelMode && currentSearchType === 'video');
+    if (searchTabChannels) searchTabChannels.classList.toggle('active', !channelMode && currentSearchType === 'channel');
+    if (btnLoadMore) btnLoadMore.textContent = channelMode ? 'MEHR VIDEOS LADEN' : 'MEHR ERGEBNISSE LADEN';
+}
+
+function makeSearchCard(item) {
+    const isChannel = item.result_type === 'channel';
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'search-result' + (isChannel ? ' search-result-channel' : '');
+    card.setAttribute('aria-label', isChannel ? `Kanal öffnen: ${item.title}` : `Abspielen: ${item.title}`);
+
+    const image = document.createElement('img');
+    image.className = 'search-thumbnail' + (isChannel ? ' search-channel-thumbnail' : '');
+    image.alt = '';
+    image.loading = 'lazy';
+    image.src = item.thumbnail || '';
+    image.hidden = !item.thumbnail;
+
+    const details = document.createElement('span');
+    details.className = 'search-details';
+    const title = document.createElement('span');
+    title.className = 'search-title';
+    title.textContent = item.title || (isChannel ? 'Unbekannter Kanal' : 'Unbekanntes Video');
+    const metadata = document.createElement('span');
+    metadata.className = 'search-channel';
+    metadata.textContent = isChannel ? '▶ KANAL ÖFFNEN · Videos durchsuchen' : (item.channel || 'Unbekannter Kanal');
+    details.append(title, metadata);
+
+    if (isChannel && item.description) {
+        const description = document.createElement('span');
+        description.className = 'search-description';
+        description.textContent = item.description;
+        details.append(description);
+    } else if (!isChannel && item.published_at) {
+        const published = document.createElement('span');
+        published.className = 'search-published';
+        const date = new Date(item.published_at);
+        published.textContent = Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('de-DE');
+        details.append(published);
+    }
+
+    card.append(image, details);
+    card.addEventListener('click', () => {
+        if (isChannel) {
+            openChannel(item);
+            return;
+        }
+        queryInput.value = item.video_id;
+        searchPanel.classList.add('hidden');
+        doPlay();
+    });
+    return card;
+}
+
+async function executeSearch(params, { append = false } = {}) {
+    if (append && (!searchNextPageToken || (btnLoadMore && btnLoadMore.disabled))) return;
     const requestId = ++searchRequestId;
-    searchPanel.classList.remove('hidden');
-    searchResults.replaceChildren();
-    searchMessage.textContent = 'Suche läuft …';
-    btnSearch.disabled = true;
+    const tokenForRequest = append ? searchNextPageToken : '';
+    if (!append) {
+        activeSearchParams = { ...params };
+        searchResults.replaceChildren();
+        searchNextPageToken = '';
+        searchItemCount = 0;
+        if (btnLoadMore) btnLoadMore.classList.add('hidden');
+        searchMessage.textContent = searchView === 'channel' ? 'Kanalvideos werden geladen …' : 'Suche läuft …';
+    } else if (btnLoadMore) {
+        btnLoadMore.disabled = true;
+        btnLoadMore.textContent = 'LÄDT …';
+    }
+
+    if (btnSearch) btnSearch.disabled = true;
     try {
-        const response = await fetch('/api/search?q=' + encodeURIComponent(query));
+        const urlParams = new URLSearchParams();
+        if (params.q) urlParams.set('q', params.q);
+        urlParams.set('search_type', params.search_type || 'video');
+        urlParams.set('max_results', params.channel_id ? '50' : '25');
+        if (params.channel_id) urlParams.set('channel_id', params.channel_id);
+        if (params.uploads_playlist_id) urlParams.set('uploads_playlist_id', params.uploads_playlist_id);
+        if (params.order) urlParams.set('order', params.order);
+        if (tokenForRequest) urlParams.set('page_token', tokenForRequest);
+
+        const response = await fetch('/api/search?' + urlParams.toString());
         const data = await response.json();
         if (requestId !== searchRequestId) return;
         if (!response.ok) {
             if (response.status === 403) throw new Error('Bitte zuerst mit deiner PIN anmelden und erneut suchen.');
             throw new Error(data.error || `Suche fehlgeschlagen (${response.status}).`);
         }
-        const results = data.results || [];
-        if (!results.length) { searchMessage.textContent = 'Keine Videos gefunden.'; return; }
-        searchMessage.textContent = `${results.length} Ergebnisse – wähle ein Video aus`;
-        for (const video of results) {
-            const card = document.createElement('button');
-            card.type = 'button'; card.className = 'search-result';
-            card.setAttribute('aria-label', `Abspielen: ${video.title}`);
-            const image = document.createElement('img');
-            image.className = 'search-thumbnail'; image.alt = ''; image.loading = 'lazy';
-            image.src = video.thumbnail || ''; image.hidden = !video.thumbnail;
-            const details = document.createElement('span'); details.className = 'search-details';
-            const title = document.createElement('span'); title.className = 'search-title'; title.textContent = video.title;
-            const channel = document.createElement('span'); channel.className = 'search-channel'; channel.textContent = video.channel || 'Unbekannter Kanal';
-            details.append(title, channel); card.append(image, details);
-            card.addEventListener('click', () => { queryInput.value = video.video_id; searchPanel.classList.add('hidden'); doPlay(); });
-            searchResults.append(card);
+
+        if (params.channel_id && data.uploads_playlist_id) {
+            activeSearchParams = { ...activeSearchParams, uploads_playlist_id: data.uploads_playlist_id };
         }
+        const results = data.results || [];
+        if (!append && !results.length) {
+            searchMessage.textContent = searchView === 'channel' ? 'Für diesen Kanal wurden keine Videos gefunden.' : 'Keine Ergebnisse gefunden.';
+            if (btnLoadMore) btnLoadMore.classList.add('hidden');
+            return;
+        }
+        for (const item of results) searchResults.append(makeSearchCard(item));
+        searchItemCount += results.length;
+        searchNextPageToken = data.next_page_token || '';
+        if (btnLoadMore) {
+            btnLoadMore.classList.toggle('hidden', !searchNextPageToken);
+            btnLoadMore.disabled = false;
+        }
+
+        const kindLabel = searchView === 'channel' ? 'Kanalvideos' : (currentSearchType === 'channel' ? 'Kanäle' : 'Videos');
+        const total = Number(data.total_results || 0);
+        const totalText = total > 0 ? ` von ca. ${total.toLocaleString('de-DE')}` : '';
+        searchMessage.textContent = `${searchItemCount}${totalText} ${kindLabel} angezeigt` + (searchNextPageToken ? ' · weitere Ergebnisse verfügbar' : ' · Ende der Ergebnisse');
     } catch (error) {
-        if (requestId === searchRequestId) searchMessage.textContent = error.message || 'Die Suche ist fehlgeschlagen.';
-    } finally { if (requestId === searchRequestId) btnSearch.disabled = false; }
+        if (requestId === searchRequestId) {
+            searchMessage.textContent = error.message || 'Die Suche ist fehlgeschlagen.';
+            if (btnLoadMore) btnLoadMore.classList.toggle('hidden', !searchNextPageToken);
+        }
+    } finally {
+        if (requestId === searchRequestId) {
+            if (btnSearch) btnSearch.disabled = false;
+            if (btnLoadMore) {
+                btnLoadMore.disabled = false;
+                if (btnLoadMore.classList.contains('hidden')) btnLoadMore.textContent = searchView === 'channel' ? 'MEHR VIDEOS LADEN' : 'MEHR ERGEBNISSE LADEN';
+                else btnLoadMore.textContent = searchView === 'channel' ? 'MEHR VIDEOS LADEN' : 'MEHR ERGEBNISSE LADEN';
+            }
+        }
+    }
+}
+
+function doSearch(type = currentSearchType) {
+    const query = queryInput.value.trim();
+    if (!query) { queryInput.focus(); return; }
+    currentSearchType = type;
+    searchView = 'search';
+    activeChannel = null;
+    if (type === 'channel') savedChannelSearchQuery = query;
+    updateSearchChrome();
+    searchPanel.classList.remove('hidden');
+    return executeSearch({ q: query, search_type: type });
+}
+
+function openChannel(channel) {
+    savedChannelSearchQuery = queryInput.value.trim() || savedChannelSearchQuery;
+    activeChannel = channel;
+    searchView = 'channel';
+    currentSearchType = 'video';
+    updateSearchChrome();
+    searchPanel.classList.remove('hidden');
+    return executeSearch({ q: '', search_type: 'video', channel_id: channel.channel_id, order: 'date' });
+}
+
+function backToChannelSearch() {
+    if (!savedChannelSearchQuery) return;
+    queryInput.value = savedChannelSearchQuery;
+    currentSearchType = 'channel';
+    searchView = 'search';
+    activeChannel = null;
+    updateSearchChrome();
+    return executeSearch({ q: savedChannelSearchQuery, search_type: 'channel' });
+}
+
+function loadMoreSearchResults() {
+    if (!activeSearchParams || !searchNextPageToken) return;
+    return executeSearch(activeSearchParams, { append: true });
 }
 
 // ───────── Wiring ─────────
 btnPlay.addEventListener('click', doPlay);
-btnSearch.addEventListener('click', doSearch);
+btnSearch.addEventListener('click', () => doSearch(currentSearchType));
 if (btnCloseSearch) btnCloseSearch.addEventListener('click', () => searchPanel.classList.add('hidden'));
 btnStop.addEventListener('click', doStop);
-queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(currentSearchType); } });
+if (searchTabVideos) searchTabVideos.addEventListener('click', () => doSearch('video'));
+if (searchTabChannels) searchTabChannels.addEventListener('click', () => doSearch('channel'));
+if (btnLoadMore) btnLoadMore.addEventListener('click', loadMoreSearchResults);
+if (btnBackChannels) btnBackChannels.addEventListener('click', backToChannelSearch);
 
 window.addEventListener('resize', () => {
     if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
