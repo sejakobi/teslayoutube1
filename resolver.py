@@ -7,7 +7,9 @@ import base64
 import binascii
 import os
 import re
+import shutil
 import tempfile
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -41,34 +43,62 @@ class ResolvedMedia:
     audio_headers: dict[str, str] = field(default_factory=dict)
 
 
-def _ydl_opts(max_height: int, player_clients: list[str]) -> dict:
-    """Build yt-dlp options for a specific YouTube player-client profile."""
+def _prepare_js_runtime() -> Optional[str]:
+    """Expose the Deno runtime installed by render-build.sh to yt-dlp."""
+    deno_install = Path(os.environ.get("DENO_INSTALL", str(Path.home() / ".deno")))
+    candidates = [
+        deno_install / "bin" / "deno",
+        Path.home() / ".deno" / "bin" / "deno",
+    ]
 
-    # Prefer direct HTTPS streams. YouTube's HLS/m3u8 playlists are currently
-    # returning HTTP 403 for FFmpeg segment requests in this deployment.
-    # The ASCII renderer does not need high source resolution, so a direct
-    # progressive format is a suitable fallback when DASH/HLS is unavailable.
+    deno_path = next((p for p in candidates if p.is_file()), None)
+    if deno_path is None:
+        found = shutil.which("deno")
+        deno_path = Path(found) if found else None
+
+    if deno_path is None:
+        return None
+
+    bin_dir = str(deno_path.parent)
+    current_path = os.environ.get("PATH", "")
+    if bin_dir not in current_path.split(os.pathsep):
+        os.environ["PATH"] = bin_dir + os.pathsep + current_path
+
+    return str(deno_path)
+
+
+def _ydl_opts(max_height: int, deno_path: Optional[str] = None) -> dict:
+    """Build yt-dlp options with default YouTube clients and a JS runtime.
+
+    Prefer direct HTTPS formats to avoid HLS segment 403s, but keep broad
+    fallbacks so videos that only expose other protocols are not rejected
+    with "Requested format is not available".
+    """
     fmt = (
         f"bestvideo[protocol=https][height<={max_height}]"
         f"+bestaudio[protocol=https]"
         f"/best[protocol=https][height<={max_height}]"
-        f"/best[protocol=https]"
+        f"/bestvideo[height<={max_height}]+bestaudio"
+        f"/best[height<={max_height}]"
+        "/best"
     )
 
-    return {
+    opts = {
         "format": fmt,
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,
         "extract_flat": False,
-        "extractor_args": {
-            "youtube": {
-                "player_client": player_clients,
-            }
-        },
         "noplaylist": True,
-        "socket_timeout": 20,
+        "socket_timeout": 30,
         "retries": 2,
+        "extractor_retries": 2,
+        # Use the normal/current yt-dlp YouTube client selection instead of
+        # hard-coding tv/web_safari/android, which can yield no player data.
+        # The EJS scripts are included by the yt-dlp[default] extra.
     }
+    if deno_path:
+        opts["js_runtimes"] = {"deno": {"path": deno_path}}
+    return opts
 
 
 def _extract(url: str, max_height: int) -> dict:
@@ -77,14 +107,22 @@ def _extract(url: str, max_height: int) -> dict:
     cookie_path = None
 
     try:
+        deno_path = _prepare_js_runtime()
+        if not deno_path:
+            # Do not log environment details or anything from the cookie value.
+            # Continue extraction so yt-dlp can still use a runtime supplied by PATH;
+            # the configured Render build script installs Deno for production.
+            import logging
+            logging.getLogger("resolver").warning(
+                "Deno runtime not found. YouTube extraction may fail; "
+                "verify Render Build Command is 'bash render-build.sh'."
+            )
+
         encoded = os.environ.get("YOUTUBE_COOKIES_B64", "").strip()
 
         if encoded:
             try:
-                cookie_bytes = base64.b64decode(
-                    encoded,
-                    validate=True,
-                )
+                cookie_bytes = base64.b64decode(encoded, validate=True)
             except (binascii.Error, ValueError) as exc:
                 raise ResolverError(
                     "YOUTUBE_COOKIES_B64 is invalid Base64. "
@@ -92,62 +130,21 @@ def _extract(url: str, max_height: int) -> dict:
                 ) from exc
 
             if not cookie_bytes:
-                raise ResolverError(
-                    "The decoded YouTube cookie file is empty."
-                )
+                raise ResolverError("The decoded YouTube cookie file is empty.")
 
             # Create a temporary cookie file. Never log its contents.
             with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix="yt-cookies-",
-                suffix=".txt",
-                delete=False,
+                mode="wb", prefix="yt-cookies-", suffix=".txt", delete=False
             ) as cookie_file:
                 cookie_file.write(cookie_bytes)
                 cookie_path = cookie_file.name
 
-        # YouTube has recently changed which player clients expose playable
-        # formats. Try the current default clients first, then narrow profiles
-        # if yt-dlp reports that the selected format is unavailable.
-        # Do not combine web_safari with the default client: that often makes
-        # yt-dlp prefer an HLS playlist. The format selector above also refuses
-        # m3u8/HLS protocols; these profiles are tried only when no HTTPS format
-        # is available for the preceding profile.
-        client_profiles = (
-            ["default"],
-            ["android"],
-            ["tv"],
-        )
-        info = None
-        last_download_error = None
+        opts = _ydl_opts(max_height, deno_path)
+        if cookie_path:
+            opts["cookiefile"] = cookie_path
 
-        for profile_index, player_clients in enumerate(client_profiles):
-            opts = _ydl_opts(max_height, player_clients)
-            if cookie_path:
-                opts["cookiefile"] = cookie_path
-
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                break
-            except yt_dlp.utils.DownloadError as exc:
-                last_download_error = exc
-                message = str(exc).lower()
-                is_format_error = (
-                    "requested format is not available" in message
-                    or "no video formats found" in message
-                    or "only images are available" in message
-                )
-                if not is_format_error or profile_index == len(client_profiles) - 1:
-                    raise
-
-        if info is None and last_download_error is not None:
-            raise last_download_error
-
-        if info is None:
-            raise ResolverError(
-                f"yt-dlp returned no information for: {url}"
-            )
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
         # Search results are returned inside an entries list.
         if "entries" in info:
