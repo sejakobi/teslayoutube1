@@ -1,11 +1,10 @@
 """Video and audio pipelines.
 
-Video: ffmpeg reads the resolved media URL at native realtime rate
-(`-re`), scales to cols×rows, and emits a constant-rate raw BGR24 stream
-(`-fps_mode cfr -r N`).  Frames are read on a worker thread, encoded to
-the ASCILINE color frame format on an executor, and yielded straight to
-the WebSocket.  No consumer-side pacing — the producer's source pacing
-is what makes the cadence even.
+Video: FFmpeg reads the resolved media URL in realtime and scales it to the
+selected size and frame rate. ASCII mode emits raw BGR24 frames; Canvas mode
+emits native MJPEG frames directly from FFmpeg. Sending MJPEG avoids copying
+raw frames into Python and re-encoding every frame with OpenCV. Frames are
+read on a worker thread and sent over WebSocket with a 4-byte frame index.
 
 Audio: a second ffmpeg encodes the selected audio source as MP3 and pipes
 chunks to the /audio HTTP endpoint. Stream-specific HTTP headers from yt-dlp
@@ -88,26 +87,29 @@ def _build_ffmpeg_cmd(
     frame_width: Optional[int] = None,
     frame_height: Optional[int] = None,
     fps_cap: Optional[int] = None,
+    jpeg_quality: int = 80,
 ) -> list[str]:
-    # `-re` (before `-i`) makes ffmpeg read the input at native realtime
-    # rate, so frames arrive on the consumer side evenly paced rather than
-    # in bursts.  `-fps_mode cfr -r N` then duplicates/drops to a constant
-    # N fps stream so the wire frame count matches `targetFps` exactly.
-    # Live HLS sources are already realtime — `-re` is then redundant but
-    # harmless (it caps read speed; live is already capped).
+    """Build an FFmpeg command for ASCII raw frames or Canvas MJPEG frames."""
     if display_mode == "canvas":
         width = int(frame_width or 640)
         height = int(frame_height or 360)
-        fps = int(fps_cap or preset.fps_cap)
+        fps = max(1, min(30, int(fps_cap or preset.fps_cap)))
         video_filter = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=fast_bilinear,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         )
+        # FFmpeg's MJPEG qscale runs in the opposite direction to a typical
+        # JPEG quality slider: 2 is high quality, 31 is small/low quality.
+        # A modest qscale keeps 25 FPS practical without inflating WebSocket data.
+        quality = max(40, min(95, int(jpeg_quality)))
+        qscale = max(2, min(9, int(round(2 + (100 - quality) * 0.16))))
     else:
         width, height, fps = preset.cols, preset.rows, preset.fps_cap
         video_filter = f"scale={width}:{height}:flags=fast_bilinear"
 
-    return [
+    # `-re` caps input reading to realtime. The output frame rate is also
+    # capped so the frame indexes and frontend clock use the same cadence.
+    cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "warning",
@@ -119,10 +121,25 @@ def _build_ffmpeg_cmd(
         "-vf", video_filter,
         "-fps_mode", "cfr",
         "-r", str(fps),
-        "-f", "rawvideo",
-        "-pix_fmt", "bgr24",
-        "pipe:1",
     ]
+
+    if display_mode == "canvas":
+        # Stream JPEGs straight from FFmpeg. This eliminates the prior path
+        # raw BGR -> Python -> OpenCV JPEG -> WebSocket, reducing CPU and copies.
+        cmd.extend([
+            "-c:v", "mjpeg",
+            "-q:v", str(qscale),
+            "-threads:v", "2",
+            "-f", "image2pipe",
+            "pipe:1",
+        ])
+    else:
+        cmd.extend([
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "pipe:1",
+        ])
+    return cmd
 
 
 def _build_audio_ffmpeg_cmd(
@@ -195,6 +212,7 @@ class VideoPipeline:
             frame_width=self.frame_width,
             frame_height=self.frame_height,
             fps_cap=self.target_fps,
+            jpeg_quality=self.jpeg_quality,
         )
         if self.display_mode == "canvas":
             log.info("ffmpeg start: canvas %sx%s @ %s fps request_headers=%s",
@@ -244,16 +262,18 @@ class VideoPipeline:
         )
 
     def _reader_loop(self) -> None:
-        """Worker thread: blocking reads of fixed-size BGR frames."""
+        """Read FFmpeg output; Canvas is a concatenated JPEG stream."""
         proc = self._proc
         loop = self._loop
         if proc is None or loop is None or proc.stdout is None:
             return
-        frame_bytes = self.frame_width * self.frame_height * 3
         try:
+            if self.display_mode == "canvas":
+                self._read_mjpeg_frames(proc.stdout, loop)
+                return
+
+            frame_bytes = self.frame_width * self.frame_height * 3
             while not self._stop.is_set():
-                # Loop the read explicitly so a short final read does not
-                # get treated as a full frame.
                 chunks: list[bytes] = []
                 remaining = frame_bytes
                 while remaining > 0:
@@ -263,12 +283,56 @@ class VideoPipeline:
                     chunks.append(chunk)
                     remaining -= len(chunk)
                 if remaining > 0:
-                    break  # EOF
+                    break  # EOF or partial final raw frame
                 self.frames_read += 1
                 data = b"".join(chunks) if len(chunks) > 1 else chunks[0]
                 loop.call_soon_threadsafe(self._enqueue, data)
+        except (OSError, RuntimeError) as exc:
+            if not self._stop.is_set():
+                log.warning("video reader stopped: %s", exc)
         finally:
-            loop.call_soon_threadsafe(self._signal_eof)
+            try:
+                loop.call_soon_threadsafe(self._signal_eof)
+            except RuntimeError:
+                pass
+
+    def _read_mjpeg_frames(self, stdout, loop: asyncio.AbstractEventLoop) -> None:
+        """Split FFmpeg image2pipe MJPEG output by JPEG SOI/EOI markers."""
+        buffer = bytearray()
+        soi = b"\xff\xd8"
+        eoi = b"\xff\xd9"
+        while not self._stop.is_set():
+            chunk = stdout.read(65536)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            while True:
+                start = buffer.find(soi)
+                if start < 0:
+                    # Keep a trailing 0xFF in case the next chunk starts with D8.
+                    keep_tail = bool(buffer and buffer[-1] == 0xFF)
+                    buffer[:] = b"\xff" if keep_tail else b""
+                    break
+                if start > 0:
+                    del buffer[:start]
+                end = buffer.find(eoi, 2)
+                if end < 0:
+                    break
+                jpeg = bytes(buffer[:end + 2])
+                del buffer[:end + 2]
+                self.frames_read += 1
+                try:
+                    loop.call_soon_threadsafe(self._enqueue, jpeg)
+                except RuntimeError:
+                    return
+            # Defensive guard against an invalid stream growing without bound.
+            if len(buffer) > 8 * 1024 * 1024:
+                log.warning("MJPEG frame buffer exceeded 8 MiB; resynchronising")
+                start = buffer.find(soi, 1)
+                if start >= 0:
+                    del buffer[:start]
+                else:
+                    buffer.clear()
 
     def _stderr_loop(self) -> None:
         proc = self._proc
@@ -319,14 +383,12 @@ class VideoPipeline:
 
         if self.display_mode == "canvas":
             while True:
-                raw = await self._queue.get()
-                if not raw:
+                jpeg = await self._queue.get()
+                if not jpeg:
                     return
-                payload = await loop.run_in_executor(
-                    None, _encode_jpeg_frame, raw, frame_index,
-                    self.frame_width, self.frame_height, self.jpeg_quality,
-                )
-                yield payload
+                # Same frontend wire protocol as before: 4-byte big-endian
+                # frame index followed by one complete JPEG image.
+                yield struct.pack(">I", frame_index) + jpeg
                 frame_index += 1
             return
 
@@ -426,23 +488,6 @@ class AudioPipeline:
             if not chunk:
                 break
             yield chunk
-
-
-def _encode_jpeg_frame(
-    raw: bytes,
-    frame_index: int,
-    width: int,
-    height: int,
-    quality: int,
-) -> bytes:
-    """Encode one BGR frame as JPEG and prefix a 32-bit big-endian frame index."""
-    bgr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3)
-    ok, encoded = cv2.imencode(
-        ".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    )
-    if not ok:
-        raise RuntimeError("OpenCV could not encode a Canvas frame as JPEG")
-    return struct.pack(">I", frame_index) + encoded.tobytes()
 
 
 def _encode_frame(
