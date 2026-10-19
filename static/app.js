@@ -79,6 +79,15 @@ let fpsBelowThreshold = false;
 let lastPaintTime    = 0;
 let maxPaintInterval = 0;
 
+// Canvas diagnostics: measure WebSocket arrival, JPEG decode and canvas paint
+// separately so the real bottleneck is visible in the HUD.
+let rxFramesWindow = 0;
+let decodedFramesWindow = 0;
+let rxBytesWindow = 0;
+let measuredRxFps = 0;
+let measuredDecodeFps = 0;
+let measuredRxMBps = 0;
+
 // ───────── Preset selection UI ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -263,14 +272,28 @@ function renderFrame(now) {
     lastPaintTime = now;
 
     if (now - lastFpsUpdate >= 1000) {
-        measuredFps      = frameCount;
+        const elapsedSec = Math.max(0.001, (now - lastFpsUpdate) / 1000);
+        measuredFps      = Math.round(frameCount / elapsedSec);
         frameCount       = 0;
         lastFpsUpdate    = now;
         const jitter     = Math.round(maxPaintInterval);
         maxPaintInterval = 0;
-        statusFps.textContent =
-            `FPS ${measuredFps}/${Math.round(targetFps)}  ` +
-            `JIT ${jitter}ms  BUF ${frameBuffer.length}`;
+        if (canvasVideoMode) {
+            measuredRxFps = Math.round(rxFramesWindow / elapsedSec);
+            measuredDecodeFps = Math.round(decodedFramesWindow / elapsedSec);
+            measuredRxMBps = (rxBytesWindow / 1048576) / elapsedSec;
+            rxFramesWindow = 0;
+            decodedFramesWindow = 0;
+            rxBytesWindow = 0;
+            statusFps.textContent =
+                `RX ${measuredRxFps} | DEC ${measuredDecodeFps} | ` +
+                `DRAW ${measuredFps}/${Math.round(targetFps)} | ` +
+                `${measuredRxMBps.toFixed(2)} MB/s | BUF ${frameBuffer.length}`;
+        } else {
+            statusFps.textContent =
+                `FPS ${measuredFps}/${Math.round(targetFps)}  ` +
+                `JIT ${jitter}ms  BUF ${frameBuffer.length}`;
+        }
     }
 
     fpsWindowFrames++;
@@ -372,6 +395,12 @@ function connectWs(sid) {
     clockAnchored      = false;
     lastPaintTime      = 0;
     maxPaintInterval   = 0;
+    rxFramesWindow = 0;
+    decodedFramesWindow = 0;
+    rxBytesWindow = 0;
+    measuredRxFps = 0;
+    measuredDecodeFps = 0;
+    measuredRxMBps = 0;
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
@@ -420,12 +449,15 @@ function connectWs(sid) {
             const idx = parseInt(event.data.substring(0, nl));
             frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
         } else {
+            rxFramesWindow++;
+            rxBytesWindow += event.data.byteLength;
             const view = new DataView(event.data);
             const idx  = view.getUint32(0, false);
             if (canvasVideoMode) {
                 if (idx <= lastCanvasFrameIndex) return;
                 const jpeg = event.data.slice(4);
                 createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then(bitmap => {
+                    decodedFramesWindow++;
                     if (appState !== 'playing' || !canvasVideoMode || idx <= lastCanvasFrameIndex) {
                         bitmap.close();
                         return;
