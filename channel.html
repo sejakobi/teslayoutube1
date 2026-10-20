@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080b12">
+  <title>Kanal · ASCILINE</title>
+  <style>
+    :root{color-scheme:dark;--bg:#080b12;--panel:#111722;--panel2:#171f2d;--line:#263346;--text:#f4f7fb;--muted:#9ba9bb;--cyan:#4de5f2;--red:#ff405f}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 10% 0%,#14263b 0,transparent 38%),var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+    a{color:inherit;text-decoration:none}.page{max-width:1440px;margin:auto;padding:22px clamp(14px,3vw,42px) 60px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}.brand{font-size:19px;font-weight:900;letter-spacing:.14em}.brand span{color:var(--cyan)}.back{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:#111722;color:#dce7f3}
+    .hero{position:relative;display:grid;grid-template-columns:auto 1fr;gap:22px;align-items:center;padding:clamp(20px,4vw,36px);border:1px solid var(--line);border-radius:24px;background:linear-gradient(120deg,#141f2fef,#10151fee);box-shadow:0 20px 60px #0004;overflow:hidden}.avatar{width:clamp(84px,12vw,144px);aspect-ratio:1;border-radius:50%;object-fit:cover;border:3px solid #ffffff1a;background:#202b3b}.channel-name{font-size:clamp(24px,4vw,38px);font-weight:850;line-height:1.15;margin:0 0 8px;overflow-wrap:anywhere}.stats{display:flex;flex-wrap:wrap;gap:8px 18px;color:var(--muted);font-size:13px;margin:8px 0 14px}.desc{color:#c3cfdd;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100ch;max-height:7.5em;overflow:auto}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:11px;border:1px solid var(--line);background:var(--panel2);font-weight:700}.btn.primary{color:#041116;background:var(--cyan);border-color:transparent}.section-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:32px 0 16px}.section-head h2{font-size:22px;margin:0}.sub{color:var(--muted);font-size:13px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}.video{min-width:0;display:block;border:1px solid #ffffff0a;border-radius:15px;overflow:hidden;background:var(--panel);transition:transform .18s,border-color .18s,box-shadow .18s}.video:hover{transform:translateY(-3px);border-color:#4de5f266;box-shadow:0 12px 32px #0005}.thumb{position:relative;aspect-ratio:16/9;background:#182131}.thumb img{display:block;width:100%;height:100%;object-fit:cover}.duration{position:absolute;right:7px;bottom:7px;padding:3px 6px;border-radius:5px;background:#000d;color:white;font-size:12px;font-weight:800}.vbody{padding:12px 13px 14px}.vtitle{font-weight:750;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.7em}.vmeta{margin-top:8px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:8px}.message{padding:22px;border:1px dashed var(--line);border-radius:16px;color:var(--muted);text-align:center;background:#11172280}.hidden{display:none!important}.loadrow{text-align:center;padding:22px;color:var(--muted)}.error{color:#ff8797}
+    @media(max-width:1050px){.grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}}@media(max-width:700px){.page{padding-top:14px}.hero{grid-template-columns:1fr;text-align:center;justify-items:center}.avatar{width:100px}.desc{text-align:left}.stats,.actions{justify-content:center}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.vbody{padding:9px}.vtitle{font-size:13px}.vmeta{font-size:11px;flex-wrap:wrap}}@media(max-width:390px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar"><a class="brand" href="/">ASCI<span>LINE</span></a><a class="back" href="/">← Zur Suche</a></header>
+    <section id="channel-hero" class="hero" aria-live="polite">
+      <img id="channel-avatar" class="avatar" alt="Kanalprofilbild" src="">
+      <div><h1 id="channel-name" class="channel-name">Kanal wird geladen …</h1><div id="channel-stats" class="stats"></div><div id="channel-description" class="desc"></div><div class="actions"><a id="youtube-channel" class="btn primary" href="#" target="_blank" rel="noopener noreferrer">Auf YouTube öffnen ↗</a><a class="btn" href="/">← Zurück zur Suche</a></div></div>
+    </section>
+    <div class="section-head"><div><h2>Videos dieses Kanals</h2><div id="video-subtitle" class="sub">Neueste Uploads</div></div></div>
+    <section id="channel-videos" class="grid" aria-live="polite"></section>
+    <div id="channel-message" class="message">Kanal wird geladen …</div>
+    <div id="channel-load" class="loadrow"></div>
+    <div id="channel-sentinel" style="height:1px"></div>
+  </main>
+  <script src="/static/channel.js?v=1" defer></script>
+</body>
+</html>
