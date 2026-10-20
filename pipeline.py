@@ -95,7 +95,7 @@ def _build_ffmpeg_cmd(
         height = int(frame_height or 360)
         fps = max(1, min(30, int(fps_cap or preset.fps_cap)))
         video_filter = (
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=fast_bilinear,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=bicubic,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         )
         # FFmpeg's MJPEG qscale runs in the opposite direction to a typical
@@ -115,6 +115,10 @@ def _build_ffmpeg_cmd(
         "-loglevel", "warning",
         "-nostdin",
         "-re",
+        # The media URL is already a direct stream URL from yt-dlp. Keep
+        # FFmpeg's probing window small so the first Canvas frame appears sooner.
+        "-probesize", "32768",
+        "-analyzeduration", "0",
         *_ffmpeg_input_header_args(headers),
         "-i", media_url,
         "-an",
