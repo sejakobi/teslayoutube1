@@ -142,9 +142,58 @@ app.add_middleware(AuthMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _youtube_api_url(resource: str, params: dict) -> str:
+    """Build a YouTube Data API URL using the server-side API key."""
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        raise RuntimeError("YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert.")
+    query = dict(params)
+    query["key"] = api_key
+    return "https://www.googleapis.com/youtube/v3/" + resource + "?" + urlencode(query)
+
+def _youtube_fetch_json(url: str) -> dict:
+    request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
+    with urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+def _duration_label(iso_duration: str) -> str:
+    """Convert YouTube ISO-8601 durations (e.g. PT1H2M3S) to H:MM:SS / M:SS."""
+    import re
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso_duration or "")
+    if not match:
+        return ""
+    hours, minutes, seconds = (int(value or 0) for value in match.groups())
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+async def _get_video_details(video_ids: list[str]) -> dict[str, dict]:
+    """Return duration and view-count metadata for up to 50 videos; tolerate API failure."""
+    ids = [value for value in video_ids if value][:50]
+    if not ids or not os.environ.get("YOUTUBE_API_KEY"):
+        return {}
+    url = _youtube_api_url("videos", {"part": "contentDetails,statistics", "id": ",".join(ids)})
+    try:
+        data = await asyncio.to_thread(_youtube_fetch_json, url)
+        output = {}
+        for item in data.get("items", []):
+            video_id = item.get("id", "")
+            details = item.get("contentDetails", {})
+            stats = item.get("statistics", {})
+            output[video_id] = {
+                "duration": _duration_label(details.get("duration", "")),
+                "duration_iso": details.get("duration", ""),
+                "view_count": stats.get("viewCount", ""),
+            }
+        return output
+    except Exception as exc:
+        # The basic search should still work if metadata lookup fails.
+        log.warning("YouTube video details lookup failed: %s", exc)
+        return {}
+
 @app.get("/api/search")
 async def api_search(q: str = "", search_type: str = "video", page_token: str = "", max_results: int = 24):
-    """Search YouTube videos or channels and expose YouTube's next-page token."""
+    """Search YouTube videos or channels; video results include duration metadata."""
     query = q.strip()
     kind = (search_type or "video").strip().lower()
     page_token = page_token.strip()
@@ -154,22 +203,17 @@ async def api_search(q: str = "", search_type: str = "video", page_token: str = 
         return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
     if len(query) > 200 or len(page_token) > 2048:
         return JSONResponse(status_code=400, content={"error": "Suchbegriff oder Seitentoken ist ungültig."})
-    api_key = os.environ.get("YOUTUBE_API_KEY")
-    if not api_key:
+    if not os.environ.get("YOUTUBE_API_KEY"):
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
     per_page = max(1, min(int(max_results), 50))
-    params_dict = {"part": "snippet", "type": kind, "maxResults": per_page, "q": query,
-                   "regionCode": "DE", "relevanceLanguage": "de", "key": api_key}
+    params = {"part": "snippet", "type": kind, "maxResults": per_page, "q": query,
+              "regionCode": "DE", "relevanceLanguage": "de"}
     if page_token:
-        params_dict["pageToken"] = page_token
-    url = "https://www.googleapis.com/youtube/v3/search?" + urlencode(params_dict)
-    def fetch_results():
-        request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
-        with urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode("utf-8"))
+        params["pageToken"] = page_token
     try:
-        data = await asyncio.to_thread(fetch_results)
+        data = await asyncio.to_thread(_youtube_fetch_json, _youtube_api_url("search", params))
         results = []
+        video_ids = []
         for item in data.get("items", []):
             snippet = item.get("snippet", {})
             item_id = item.get("id", {})
@@ -189,12 +233,17 @@ async def api_search(q: str = "", search_type: str = "video", page_token: str = 
                 video_id = item_id.get("videoId")
                 if not video_id:
                     continue
-                results.append({"kind": "video", "selection": _new_selection(video_id),
+                video_ids.append(video_id)
+                results.append({"kind": "video", "video_id": video_id, "selection": _new_selection(video_id),
                     "title": snippet.get("title", "Unbekanntes Video"),
                     "channel": snippet.get("channelTitle", ""),
                     "channel_id": snippet.get("channelId", ""),
                     "thumbnail": thumb.get("url", ""),
                     "published_at": snippet.get("publishedAt", "")})
+        if kind == "video" and video_ids:
+            details = await _get_video_details(video_ids)
+            for result in results:
+                result.update(details.get(result.get("video_id", ""), {}))
         return {"results": results, "next_page_token": data.get("nextPageToken"),
                 "total_results": data.get("pageInfo", {}).get("totalResults", len(results)),
                 "search_type": kind}
@@ -208,10 +257,101 @@ async def api_search(q: str = "", search_type: str = "video", page_token: str = 
         if exc.code == 403:
             return JSONResponse(status_code=502, content={"error": "YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
         return JSONResponse(status_code=502, content={"error": "Fehler bei der YouTube-Suche."})
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
+    except (URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
         log.warning("YouTube search request failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar oder der API-Key fehlt."})
+
+@app.get("/api/channel/{channel_id}")
+async def api_channel_details(channel_id: str):
+    """Return profile metadata for a YouTube channel."""
+    if not channel_id or len(channel_id) > 100 or not all(c.isalnum() or c in "_-" for c in channel_id):
+        return JSONResponse(status_code=400, content={"error": "Ungültige Kanal-ID."})
+    try:
+        url = _youtube_api_url("channels", {"part": "snippet,statistics,contentDetails", "id": channel_id})
+        data = await asyncio.to_thread(_youtube_fetch_json, url)
+        items = data.get("items", [])
+        if not items:
+            return JSONResponse(status_code=404, content={"error": "Kanal nicht gefunden."})
+        item = items[0]
+        snippet = item.get("snippet", {})
+        stats = item.get("statistics", {})
+        thumbs = snippet.get("thumbnails", {})
+        thumb = thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}
+        uploads = item.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
+        return {"channel_id": channel_id, "title": snippet.get("title", "Unbekannter Kanal"),
+                "description": snippet.get("description", ""), "thumbnail": thumb.get("url", ""),
+                "custom_url": snippet.get("customUrl", ""),
+                "subscriber_count": stats.get("subscriberCount"),
+                "hidden_subscriber_count": stats.get("hiddenSubscriberCount", False),
+                "video_count": stats.get("videoCount", ""), "uploads_playlist_id": uploads}
+    except HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            api_message = details.get("error", {}).get("message", "")
+        except Exception:
+            api_message = ""
+        log.warning("YouTube channel details HTTP %s: %s", exc.code, api_message)
+        return JSONResponse(status_code=502, content={"error": "YouTube-Kanaldaten konnten nicht geladen werden. Prüfe API-Key und Kontingent."})
+    except (URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+        log.warning("YouTube channel details request failed: %s", exc)
         return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
 
+@app.get("/api/channel/{channel_id}/videos")
+async def api_channel_videos(channel_id: str, page_token: str = "", max_results: int = 24):
+    """Return recent uploads from a channel, including their durations."""
+    if not channel_id or len(channel_id) > 100 or not all(c.isalnum() or c in "_-" for c in channel_id):
+        return JSONResponse(status_code=400, content={"error": "Ungültige Kanal-ID."})
+    if len(page_token) > 2048:
+        return JSONResponse(status_code=400, content={"error": "Seitentoken ist ungültig."})
+    try:
+        # Find the channel's uploads playlist.
+        channel_url = _youtube_api_url("channels", {"part": "contentDetails", "id": channel_id})
+        channel_data = await asyncio.to_thread(_youtube_fetch_json, channel_url)
+        channel_items = channel_data.get("items", [])
+        if not channel_items:
+            return JSONResponse(status_code=404, content={"error": "Kanal nicht gefunden."})
+        playlist_id = channel_items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads", "")
+        if not playlist_id:
+            return {"results": [], "next_page_token": ""}
+        params = {"part": "snippet,contentDetails", "playlistId": playlist_id,
+                  "maxResults": max(1, min(int(max_results), 50))}
+        if page_token:
+            params["pageToken"] = page_token
+        playlist_url = _youtube_api_url("playlistItems", params)
+        playlist_data = await asyncio.to_thread(_youtube_fetch_json, playlist_url)
+        entries = []
+        video_ids = []
+        for item in playlist_data.get("items", []):
+            snippet = item.get("snippet", {})
+            content = item.get("contentDetails", {})
+            resource = snippet.get("resourceId", {})
+            video_id = content.get("videoId") or resource.get("videoId")
+            if not video_id:
+                continue
+            thumbs = snippet.get("thumbnails", {})
+            thumb = thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}
+            video_ids.append(video_id)
+            entries.append({"video_id": video_id, "title": snippet.get("title", "Unbekanntes Video"),
+                "channel": snippet.get("videoOwnerChannelTitle") or snippet.get("channelTitle", ""),
+                "channel_id": channel_id, "thumbnail": thumb.get("url", ""),
+                "published_at": content.get("videoPublishedAt") or snippet.get("publishedAt", "")})
+        details = await _get_video_details(video_ids)
+        for entry in entries:
+            entry.update(details.get(entry["video_id"], {}))
+            entry["selection"] = _new_selection(entry["video_id"])
+        return {"results": entries, "next_page_token": playlist_data.get("nextPageToken", ""),
+                "channel_id": channel_id}
+    except HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            api_message = details.get("error", {}).get("message", "")
+        except Exception:
+            api_message = ""
+        log.warning("YouTube channel videos HTTP %s: %s", exc.code, api_message)
+        return JSONResponse(status_code=502, content={"error": "Kanalvideos konnten nicht geladen werden. Prüfe API-Key und Kontingent."})
+    except (URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+        log.warning("YouTube channel videos request failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
 
 @app.get("/")
 async def index():
@@ -220,6 +360,12 @@ async def index():
 @app.get("/watch")
 async def watch_page():
     return FileResponse(os.path.join(STATIC_DIR, "watch.html"))
+
+@app.get("/channel/{channel_id}")
+async def channel_page(channel_id: str):
+    if not channel_id or len(channel_id) > 100 or not all(c.isalnum() or c in "_-" for c in channel_id):
+        return Response(status_code=400, content="Ungültige Kanal-ID.")
+    return FileResponse(os.path.join(STATIC_DIR, "channel.html"))
 
 
 @app.get("/audio")
