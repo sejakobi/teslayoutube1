@@ -91,7 +91,9 @@ class SessionManager:
                 resolve,
                 query,
                 requested_height,
-                prefer_native=False,
+                # Canvas mode uses browser-native fragmented MP4. Prefer H.264/AAC
+                # formats when available instead of selecting AV1/VP9 by default.
+                prefer_native=(session.display_mode == "canvas"),
             )
         except ResolverError as exc:
             async with self._lock:
