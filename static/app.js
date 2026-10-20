@@ -66,7 +66,12 @@ let wsRetryTimer     = null;
 // caused stall→batch-drop bursts on the M4).  A small lead lets the very
 // first frame paint immediately instead of waiting half a second.
 const frameBuffer       = [];
-const FRAME_BUFFER_MAX  = 3;       // server queue is 2; 3 keeps ~125 ms of slack
+// Decode Canvas JPEGs serially. createImageBitmap() is asynchronous; launching
+// one decode per network frame can create an unbounded decode backlog on slower
+// devices. Keep only the newest pending compressed frame while one is decoding.
+let pendingCanvasJpeg = null;
+let canvasDecodeBusy = false;
+const FRAME_BUFFER_MAX  = 2;
 const PRESENT_LEAD_MS   = 60;
 let targetFps     = 24;
 let renderMode    = 1;
@@ -242,12 +247,45 @@ function layoutVideoCanvas() {
 }
 
 function clearFrameBuffer() {
+    pendingCanvasJpeg = null;
     for (const item of frameBuffer) {
         if (item && item.data && typeof ImageBitmap !== 'undefined' && item.data instanceof ImageBitmap) {
             item.data.close();
         }
     }
     frameBuffer.length = 0;
+}
+
+// ───────── Canvas JPEG decoder ─────────
+async function pumpCanvasDecoder() {
+    if (canvasDecodeBusy) return;
+    canvasDecodeBusy = true;
+    try {
+        while (pendingCanvasJpeg) {
+            const item = pendingCanvasJpeg;
+            pendingCanvasJpeg = null;
+            if (appState !== 'playing' || !canvasVideoMode || item.index <= lastCanvasFrameIndex) continue;
+            try {
+                const bitmap = await createImageBitmap(new Blob([item.jpeg], { type: 'image/jpeg' }));
+                if (appState !== 'playing' || !canvasVideoMode || item.index <= lastCanvasFrameIndex) {
+                    bitmap.close();
+                    continue;
+                }
+                frameBuffer.push({ data: bitmap, time: item.index / targetFps, index: item.index });
+                frameBuffer.sort((a, b) => a.index - b.index);
+                while (frameBuffer.length > FRAME_BUFFER_MAX) {
+                    const dropped = frameBuffer.shift();
+                    if (dropped?.data instanceof ImageBitmap) dropped.data.close();
+                }
+            } catch (err) {
+                console.warn('Canvas frame decode failed:', err);
+            }
+        }
+    } finally {
+        canvasDecodeBusy = false;
+        // A frame may have arrived between the final loop test and finally.
+        if (pendingCanvasJpeg) void pumpCanvasDecoder();
+    }
 }
 
 // ───────── Render loop ─────────
@@ -713,21 +751,10 @@ function connectWs(sid) {
             const idx  = view.getUint32(0, false);
             if (canvasVideoMode) {
                 if (idx <= lastCanvasFrameIndex) return;
-                const jpeg = event.data.slice(4);
-                createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then(bitmap => {
-                    if (appState !== 'playing' || !canvasVideoMode || idx <= lastCanvasFrameIndex) {
-                        bitmap.close();
-                        return;
-                    }
-                    frameBuffer.push({ data: bitmap, time: idx / targetFps, index: idx });
-                    frameBuffer.sort((a, b) => a.index - b.index);
-                    while (frameBuffer.length > FRAME_BUFFER_MAX) {
-                        const dropped = frameBuffer.shift();
-                        if (dropped && dropped.data instanceof ImageBitmap) dropped.data.close();
-                    }
-                }).catch(err => {
-                    console.warn('Canvas frame decode failed:', err);
-                });
+                // Keep only the latest pending JPEG if decoding is slower than
+                // the incoming stream; this prevents stale frames accumulating.
+                pendingCanvasJpeg = { index: idx, jpeg: event.data.slice(4) };
+                void pumpCanvasDecoder();
                 return;
             }
             frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
