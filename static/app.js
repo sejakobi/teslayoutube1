@@ -26,7 +26,11 @@ const canvas          = document.getElementById('ascii-canvas');
 const ctx             = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const idleOverlay     = document.getElementById('idle-overlay');
 const audioEl         = document.getElementById('ascii-audio');
-const canvasSource     = document.getElementById('canvas-source');
+const canvasSource     = null; // Canvas/WebCodecs mode deliberately has no HTMLVideoElement.
+let webCodecsState = null;
+let audioContext = null;
+let audioSourceNode = null;
+let audioGainNode = null;
 
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
@@ -122,7 +126,8 @@ let isMuted = false;
 
 volumeSlider.addEventListener('input', () => {
     const volume = parseFloat(volumeSlider.value);
-    if (audioEl) audioEl.volume = volume;
+    if (audioGainNode) audioGainNode.gain.value = volume;
+    else if (audioEl) audioEl.volume = volume;
     if (canvasSource) canvasSource.volume = volume;
     isMuted = volume === 0;
     if (canvasSource && canvasVideoMode) canvasSource.muted = true;
@@ -131,7 +136,8 @@ volumeSlider.addEventListener('input', () => {
 
 btnMute.addEventListener('click', () => {
     isMuted = !isMuted;
-    if (audioEl) audioEl.muted = isMuted;
+    if (audioEl) audioEl.muted = audioGainNode ? false : isMuted;
+    if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
     if (canvasSource) canvasSource.muted = true;
     updateMuteBtn();
 });
@@ -353,223 +359,271 @@ function renderFrame(now) {
     asciiPlayer.style.color   = 'transparent';
 }
 
-// ───────── Native video decoder → visible Canvas ─────────
-// Canvas mode intentionally does not transfer individual JPEG frames. The
-// browser decodes one fragmented-MP4 stream and Canvas paints presented frames.
+// Route the separate audio stream through Web Audio when supported. The audio
+// element remains only a stream transport/decoder; Web Audio owns the output gain.
+function ensureWebAudioOutput() {
+    if (!audioEl || !window.AudioContext) return false;
+    try {
+        if (!audioContext) {
+            audioContext = new AudioContext();
+            audioSourceNode = audioContext.createMediaElementSource(audioEl);
+            audioGainNode = audioContext.createGain();
+            audioSourceNode.connect(audioGainNode);
+            audioGainNode.connect(audioContext.destination);
+            audioEl.volume = 1;
+        }
+        audioEl.muted = false;
+        audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
+        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+        return true;
+    } catch (error) {
+        console.warn('Web Audio output unavailable; using native audio output', error);
+        return false;
+    }
+}
+
+// ───────── WebCodecs video decoder → visible Canvas ─────────
+// The fMP4 stream is demuxed by MP4Box.js. VideoDecoder produces VideoFrames,
+// which are scheduled on the canvas against the separate audio stream's clock.
 function stopNativeCanvasSource() {
     stopNativeAudioSync();
+    const state = webCodecsState;
+    webCodecsState = null;
+    if (state) {
+        state.stopped = true;
+        if (state.raf) cancelAnimationFrame(state.raf);
+        if (state.reader) state.reader.cancel().catch(() => {});
+        if (state.decoder) {
+            try { state.decoder.close(); } catch (_) {}
+        }
+        for (const frame of state.frames || []) {
+            try { frame.close(); } catch (_) {}
+        }
+        if (state.file && typeof state.file.stop === 'function') {
+            try { state.file.stop(); } catch (_) {}
+        }
+    }
     nativeDrawLoopRunning = false;
-    if (nativeDrawRaf !== null) {
-        cancelAnimationFrame(nativeDrawRaf);
-        nativeDrawRaf = null;
-    }
-    if (canvasSource && nativeVideoFrameCallback !== null &&
-        typeof canvasSource.cancelVideoFrameCallback === 'function') {
-        try { canvasSource.cancelVideoFrameCallback(nativeVideoFrameCallback); } catch (_) {}
-    }
+    nativeDrawRaf = null;
     nativeVideoFrameCallback = null;
     nativeLastMediaTime = -1;
     nativeFpsCount = 0;
     nativeFpsWindowStart = 0;
-    if (canvasSource) {
-        canvasSource.onloadedmetadata = null;
-        canvasSource.onplaying = null;
-        canvasSource.onwaiting = null;
-        canvasSource.onended = null;
-        canvasSource.onerror = null;
-        try { canvasSource.pause(); } catch (_) {}
-        canvasSource.removeAttribute('src');
-        try { canvasSource.load(); } catch (_) {}
-    }
 }
 
-function nativeCanvasDrawLoop(now) {
-    if (!nativeDrawLoopRunning || appState !== 'playing' || !canvasVideoMode || !canvasSource || canvasSource.paused) {
-        nativeDrawLoopRunning = false;
-        return;
-    }
+function getMp4VideoDescription(mp4File, track) {
+    const trak = mp4File.getTrackById(track.id);
+    const entry = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl &&
+        trak.mdia.minf.stbl.stsd && trak.mdia.minf.stbl.stsd.entries &&
+        trak.mdia.minf.stbl.stsd.entries[0];
+    const box = entry && (entry.avcC || entry.hvcC || entry.vpcC || entry.av1C);
+    if (!box || !window.MP4Box || !MP4Box.DataStream) return undefined;
+    const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+    box.write(stream);
+    // WebCodecs expects the codec configuration record, without its MP4 box header.
+    return new Uint8Array(stream.buffer).slice(8);
+}
 
-    if (canvasSource.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && canvas.width && canvas.height) {
-        const mediaTime = canvasSource.currentTime;
-        // The RAF fallback may run at 60 Hz even for a 25/30 FPS source. Draw
-        // only when the decoded video time advances; rVFC is already frame-led.
-        if (mediaTime !== nativeLastMediaTime) {
+function startWebCodecsDrawLoop(state) {
+    if (state.raf || state.stopped) return;
+    const draw = (now) => {
+        state.raf = 0;
+        if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
+        // Video presentation uses its own monotonic wall clock. The separate
+        // audio element is deliberately NOT the master clock: some streamed MP3
+        // responses report currentTime=0 while still appearing to be playing,
+        // which otherwise freezes the canvas on its first frame.
+        if (state.playbackStart === null && state.frames.length) {
+            state.playbackStart = now - (state.frames[0].timestamp / 1000);
+        }
+        const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+        // Discard only already-decoded frames that are too late, and render the
+        // newest due frame. Dropping decoded VideoFrames is safe; dropping encoded
+        // delta samples before decoding can corrupt the prediction chain.
+        while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
+            const older = state.frames.shift();
+            try { older.close(); } catch (_) {}
+        }
+        if (state.frames.length && state.frames[0].timestamp / 1e6 <= videoClock + 0.050) {
+            const frame = state.frames.shift();
             try {
-                ctx.drawImage(canvasSource, 0, 0, canvas.width, canvas.height);
-                nativeLastMediaTime = mediaTime;
-                nativeFpsCount++;
+                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+                    canvas.width = frame.displayWidth;
+                    canvas.height = frame.displayHeight;
+                    layoutVideoCanvas();
+                }
+                ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+                state.drawn++;
+                state.lastPresentedTime = frame.timestamp / 1e6;
             } catch (err) {
-                console.warn('Native Canvas draw failed:', err);
-            }
+                console.warn('WebCodecs canvas paint failed', err);
+            } finally { try { frame.close(); } catch (_) {} }
         }
-    }
-
-    if (!nativeFpsWindowStart) nativeFpsWindowStart = now;
-    const elapsed = now - nativeFpsWindowStart;
-    if (elapsed >= 1000) {
-        nativeRenderedFps = Math.round(nativeFpsCount * 1000 / elapsed);
-        statusFps.textContent = `FPS ${nativeRenderedFps} · ${canvas.width}×${canvas.height}`;
-        const tooSlow = nativeRenderedFps < Math.max(12, targetFps * 0.65);
-        statusPerf.classList.toggle('hidden', !tooSlow);
-        if (tooSlow) statusPerf.textContent = 'Video-Stream wird gebremst';
-        nativeFpsCount = 0;
-        nativeFpsWindowStart = now;
-    }
-
-    if (typeof canvasSource.requestVideoFrameCallback === 'function') {
-        nativeVideoFrameCallback = canvasSource.requestVideoFrameCallback(nativeCanvasDrawLoop);
-    } else {
-        nativeDrawRaf = requestAnimationFrame(nativeCanvasDrawLoop);
-    }
+        if (!state.fpsStart) state.fpsStart = now;
+        if (now - state.fpsStart >= 1000) {
+            const fps = Math.round(state.drawn * 1000 / Math.max(1, now - state.fpsStart));
+            statusFps.textContent = `FPS ${fps} · ${canvas.width}×${canvas.height} · WebCodecs`;
+            statusPerf.classList.toggle('hidden', fps >= 12);
+            if (fps < 12) statusPerf.textContent = 'Dekodierung kommt nicht hinterher';
+            state.drawn = 0;
+            state.fpsStart = now;
+        }
+        state.raf = requestAnimationFrame(draw);
+    };
+    state.raf = requestAnimationFrame(draw);
 }
 
-function ensureNativeCanvasDrawLoop() {
-    if (nativeDrawLoopRunning || !canvasSource || !canvasVideoMode) return;
-    nativeDrawLoopRunning = true;
-    if (typeof canvasSource.requestVideoFrameCallback === 'function') {
-        nativeVideoFrameCallback = canvasSource.requestVideoFrameCallback(nativeCanvasDrawLoop);
-    } else {
-        nativeDrawRaf = requestAnimationFrame(nativeCanvasDrawLoop);
-    }
-}
-
-function stopNativeAudioSync() {
-    if (nativeSyncTimer !== null) {
-        clearInterval(nativeSyncTimer);
-        nativeSyncTimer = null;
-    }
-    if (audioEl) audioEl.playbackRate = 1;
-}
-
-// The canvas video and audio are delivered by separate HTTP streams. Keep
-// their media clocks close while playing. Seeking is preferred when the
-// audio stream exposes a seekable range; otherwise a small rate correction
-// limits gradual drift without making audible jumps.
-function startNativeAudioSync() {
-    stopNativeAudioSync();
-    if (!canvasSource || !audioEl) return;
-    nativeAudioSyncStartedAt = performance.now();
-    nativeSyncTimer = setInterval(() => {
-        if (appState !== 'playing' || !canvasVideoMode || !canvasSource || !audioEl) {
-            stopNativeAudioSync();
-            return;
-        }
-        if (canvasSource.paused || audioEl.paused || !Number.isFinite(canvasSource.currentTime) || !Number.isFinite(audioEl.currentTime)) return;
-
-        const delta = audioEl.currentTime - canvasSource.currentTime; // positive = audio ahead
-        const absDelta = Math.abs(delta);
-        if (absDelta > 0.35 && audioEl.seekable && audioEl.seekable.length > 0) {
-            const start = audioEl.seekable.start(0);
-            const end = audioEl.seekable.end(audioEl.seekable.length - 1);
-            const target = Math.max(start, Math.min(end, canvasSource.currentTime));
-            try {
-                audioEl.currentTime = target;
-                audioEl.playbackRate = 1;
-                return;
-            } catch (_) { /* non-seekable live stream; use gentle rate correction below */ }
-        }
-
-        // Cap corrections to avoid audible pitch/time jumps. A difference
-        // under 80 ms is normal scheduling jitter and needs no correction.
-        if (absDelta < 0.08) {
-            audioEl.playbackRate = 1;
-        } else {
-            const correction = Math.max(-0.04, Math.min(0.04, delta * 0.08));
-            audioEl.playbackRate = Math.max(0.96, Math.min(1.04, 1 - correction));
-        }
-    }, 300);
-}
-
-function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
-    if (!canvasSource) {
-        setError('Canvas-Videoelement fehlt. Bitte static/index.html prüfen.');
+async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
+    canvasVideoMode = true;
+    targetFps = 30;
+    buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360);
+    if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window) || !window.MP4Box) {
+        setError('Dieser Browser unterstützt WebCodecs nicht vollständig. Bitte aktuelles Chrome oder Edge verwenden.');
         return;
     }
 
-    canvasVideoMode = true;
-    targetFps = 30; // display stats reflect the decoded source cadence, not a server JPEG cap.
-    buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360);
-    nativeLastMediaTime = -1;
-    nativeFpsCount = 0;
-    nativeFpsWindowStart = 0;
+    stopNativeCanvasSource();
+    const state = {
+        stopped: false, file: null, decoder: null, reader: null, raf: 0,
+        frames: [], clockStart: performance.now(), playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
+        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false
+    };
+    webCodecsState = state;
+    setStatus('BUFFERING · WEBCODECS', 'resolving');
+    statusPerf.classList.add('hidden');
 
-    canvasSource.playsInline = true;
-    canvasSource.controls = false;
-    canvasSource.preload = 'auto';
-    canvasSource.muted = true;
-    canvasSource.volume = 0;
-
-    canvasSource.onloadedmetadata = () => {
-        if (appState !== 'playing' || !canvasVideoMode) return;
-        // Preserve the actual source dimensions for sharp Canvas output. CSS
-        // scales the canvas to the player viewport without reducing its pixels.
-        if (canvasSource.videoWidth > 0 && canvasSource.videoHeight > 0) {
-            canvas.width = canvasSource.videoWidth;
-            canvas.height = canvasSource.videoHeight;
-        }
-        layoutVideoCanvas();
-    };
-    canvasSource.onplaying = () => {
-        if (appState !== 'playing' || !canvasVideoMode) return;
-        setStatus('PLAYING · CANVAS', 'playing');
-        nativeFpsWindowStart = 0;
-        ensureNativeCanvasDrawLoop();
-        startNativeAudioSync();
-    };
-    canvasSource.onwaiting = () => {
-        if (appState === 'playing' && canvasVideoMode) {
-            setStatus('BUFFERING · CANVAS', 'resolving');
-        }
-    };
-    canvasSource.onended = () => {
-        if (appState === 'playing' && canvasVideoMode) {
-            setStatus('ENDED', 'idle');
-            finishPlayback();
-        }
-    };
-    canvasSource.onerror = () => {
-        if (appState !== 'playing' || !canvasVideoMode) return;
-        const code = canvasSource.error ? canvasSource.error.code : 0;
-        const reason = ({
-            1: 'Laden abgebrochen',
-            2: 'Netzwerkfehler',
-            3: 'Videodecodierung fehlgeschlagen',
-            4: 'Streamformat nicht unterstützt'
-        })[code] || 'unbekannter Videofehler';
-        setError(`Canvas-Stream: ${reason} (Code ${code}). Render-Logs prüfen.`);
-    };
-
-    setStatus('BUFFERING · CANVAS', 'resolving');
-    canvasSource.src = `/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
-    canvasSource.load();
+    // Audio remains a separate stream, but is used as the presentation clock
+    // for the video frames so accumulated drift is minimized.
     if (audioEl) {
         audioEl.pause();
         audioEl.src = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
         audioEl.muted = isMuted;
-        audioEl.volume = parseFloat(volumeSlider.value);
+        audioEl.volume = audioGainNode ? 1 : parseFloat(volumeSlider.value);
+        audioEl.playbackRate = 1;
+        ensureWebAudioOutput();
         audioEl.load();
-        audioEl.play().catch(() => {
-            statusPerf.textContent = 'Tonfreigabe erforderlich – bitte erneut auf Wiedergabe tippen.';
-            statusPerf.classList.remove('hidden');
-        });
     }
-    canvasSource.play().catch((err) => {
-        if (appState !== 'playing' || !canvasVideoMode) return;
-        if (err && err.name === 'NotAllowedError') {
-            statusPerf.textContent = 'Klicke auf das Bild, um die Wiedergabe zu starten';
-            statusPerf.classList.remove('hidden');
-        } else {
-            statusPerf.textContent = `Video: ${err && err.name || 'Wiedergabefehler'}`;
-            statusPerf.classList.remove('hidden');
+
+    try {
+        const response = await fetch(`/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok || !response.body) throw new Error(`Videostream HTTP ${response.status}`);
+        const mp4File = MP4Box.createFile();
+        state.file = mp4File;
+        mp4File.onError = (message) => {
+            if (!state.stopped) setError(`MP4-Demultiplexing fehlgeschlagen: ${message}`);
+        };
+        mp4File.onReady = (info) => {
+            if (state.stopped || webCodecsState !== state) return;
+            const track = (info.videoTracks || [])[0];
+            if (!track) { setError('Der Stream enthält keine unterstützte Videospur.'); return; }
+            state.track = track;
+            state.timescale = track.timescale || 1;
+            const description = getMp4VideoDescription(mp4File, track);
+            const config = {
+                codec: track.codec,
+                codedWidth: track.video && track.video.width || track.track_width || fallbackWidth || 640,
+                codedHeight: track.video && track.video.height || track.track_height || fallbackHeight || 360
+            };
+            if (description) config.description = description;
+            const support = VideoDecoder.isConfigSupported ? VideoDecoder.isConfigSupported(config) : Promise.resolve({ supported: true, config });
+            support.then((result) => {
+                if (state.stopped || webCodecsState !== state) return;
+                if (!result.supported) throw new Error(`Codec nicht unterstützt: ${config.codec}`);
+                state.decoder = new VideoDecoder({
+                    output(frame) {
+                        if (state.stopped || webCodecsState !== state) { frame.close(); return; }
+                        state.frames.push(frame);
+                        while (state.frames.length > 18) {
+                            const old = state.frames.shift();
+                            try { old.close(); } catch (_) {}
+                        }
+                        if (!state.started) {
+                            state.started = true;
+                            setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
+                            idleOverlay.classList.add('hidden');
+                            if (audioEl) audioEl.play().catch(() => {
+                                statusPerf.textContent = 'Tonfreigabe erforderlich – einmal auf das Bild klicken.';
+                                statusPerf.classList.remove('hidden');
+                            });
+                            startNativeAudioSync();
+                            startWebCodecsDrawLoop(state);
+                        }
+                    },
+                    error(error) {
+                        if (!state.stopped) setError(`VideoDecoder: ${error.message || error}`);
+                    }
+                });
+                state.decoder.configure(result.config || config);
+                state.decoderConfigured = true;
+                mp4File.setExtractionOptions(track.id, null, { nbSamples: 120 });
+                mp4File.start();
+            }).catch((err) => {
+                if (!state.stopped) setError(`WebCodecs-Konfiguration fehlgeschlagen: ${err.message || err}`);
+            });
+        };
+        mp4File.onSamples = (trackId, user, samples) => {
+            if (state.stopped || !state.decoderConfigured || !state.decoder) return;
+            for (const sample of samples) {
+                // Do not discard arbitrary delta frames when the decoder is busy:
+                // losing one can corrupt the GOP and leave the canvas frozen until
+                // the next keyframe. Normalize timestamps to the first sample so
+                // they share the same zero-based clock as audio.currentTime.
+                if (state.timestampBase === null) state.timestampBase = sample.cts;
+                const timestamp = Math.round((sample.cts - state.timestampBase) * 1e6 / state.timescale);
+                try {
+                    state.decoder.decode(new EncodedVideoChunk({
+                        type: sample.is_sync ? 'key' : 'delta',
+                        timestamp: Math.max(0, timestamp),
+                        duration: Math.max(1, Math.round(sample.duration * 1e6 / state.timescale)),
+                        data: sample.data
+                    }));
+                    state.sampleCount++;
+                } catch (err) {
+                    console.warn('Video sample decode failed', err);
+                }
+            }
+        };
+        state.reader = response.body.getReader();
+        let fileStart = 0;
+        while (!state.stopped) {
+            const { value, done } = await state.reader.read();
+            if (done) break;
+            const buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+            buffer.fileStart = fileStart;
+            fileStart += buffer.byteLength;
+            mp4File.appendBuffer(buffer);
         }
-    });
+        if (!state.stopped && state.decoder) {
+            try { await state.decoder.flush(); } catch (_) {}
+            setStatus('STREAM ENDE', 'idle');
+        }
+    } catch (err) {
+        if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
+    }
 }
 
-// Some browsers require another direct user gesture after stream resolution.
+function startNativeAudioSync() {
+    stopNativeAudioSync();
+    if (!audioEl) return;
+    nativeSyncTimer = setInterval(() => {
+        const state = webCodecsState;
+        if (appState !== 'playing' || !canvasVideoMode || !state || state.stopped || !audioEl) {
+            stopNativeAudioSync(); return;
+        }
+        if (audioEl.paused || !Number.isFinite(audioEl.currentTime) || !state.started) return;
+        const videoTime = state.lastPresentedTime;
+        const delta = audioEl.currentTime - videoTime;
+        if (Math.abs(delta) < 0.08) audioEl.playbackRate = 1;
+        else audioEl.playbackRate = Math.max(0.96, Math.min(1.04, 1 - Math.max(-0.04, Math.min(0.04, delta * 0.08))));
+    }, 500);
+}
+
+function stopNativeAudioSync() {
+    if (nativeSyncTimer !== null) { clearInterval(nativeSyncTimer); nativeSyncTimer = null; }
+    if (audioEl) audioEl.playbackRate = 1;
+}
+
 canvas.addEventListener('click', () => {
-    if (canvasVideoMode && canvasSource && canvasSource.paused && appState === 'playing') {
-        canvasSource.play().catch(() => {});
-    }
     if (canvasVideoMode && audioEl && audioEl.paused && appState === 'playing') {
         audioEl.play().catch(() => {});
     }

@@ -6,8 +6,9 @@ playback to a WebCodecs video decoder:
 1. /media streams fragmented MP4 from the existing FFmpeg stream-copy remux.
 2. MP4Box.js demultiplexes the fragmented MP4 in the browser.
 3. VideoDecoder decodes H.264-compatible samples into VideoFrame objects.
-4. Frames are scheduled and drawn to the visible canvas using the audio stream's
-   clock as the presentation reference.
+4. Frames are scheduled and drawn to the visible canvas using an independent
+   monotonic video clock; audio is only best-effort synchronized and cannot
+   freeze video presentation if its currentTime stalls.
 5. The separate audio stream is routed through Web Audio gain when supported.
 
 The served player page no longer contains an HTML <video> element. MP4Box.js is
