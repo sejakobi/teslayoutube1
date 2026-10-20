@@ -79,20 +79,22 @@ def _ydl_opts(
 ) -> dict:
     """Build yt-dlp options for ASCII or native browser video playback.
 
-    Native Canvas mode needs a browser-compatible MP4 stream. Prefer H.264
-    video + AAC audio (which FFmpeg can mux without re-encoding), then fall
-    back to a single progressive MP4 format. ASCII mode retains the existing
-    separate video/audio selection.
+    Native Canvas mode selects only H.264/AVC1 video within the requested
+    height. Every native fallback remains codec-constrained so AV1/VP9 cannot
+    be selected silently. Audio is delivered separately. ASCII mode retains
+    the existing separate video/audio selection.
     """
     if prefer_native:
+        # Canvas/WebCodecs works best with a broadly supported H.264/AVC video
+        # track. Keep every fallback constrained to AVC1 and the requested
+        # height; the previous generic MP4 fallbacks could silently select AV1.
+        # Audio is fetched independently by AudioPipeline, so it does not need
+        # to be AAC or muxed into the native Canvas video stream.
         fmt = (
-            f"bestvideo[protocol=https][vcodec^=avc1][height<={max_height}]"
-            f"+bestaudio[protocol=https][acodec^=mp4a]"
-            f"/best[protocol=https][ext=mp4][height<={max_height}]"
-            f"/best[ext=mp4][height<={max_height}]"
-            f"/best[ext=mp4]"
-            f"/best[protocol=https][height<={max_height}]"
-            f"/best[height<={max_height}]"
+            f"bestvideo[vcodec^=avc1][height<={max_height}]"
+            f"+bestaudio"
+            f"/best[ext=mp4][vcodec^=avc1][height<={max_height}]"
+            f"/best[vcodec^=avc1][height<={max_height}]"
         )
     else:
         fmt = (
