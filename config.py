@@ -38,7 +38,10 @@ SERVER_DEFAULTS = {
 CANVAS_PRESETS = {
     # Keep a moderate cadence and improve JPEG quality. The browser timestamps
     # Canvas frames on arrival so occasional CDN stalls do not poison the clock.
-    "low":  {"width": 640,  "height": 360, "fps_cap": 20, "jpeg_quality": 70},
-    "med":  {"width": 1280, "height": 720, "fps_cap": 20, "jpeg_quality": 90},
-    "high": {"width": 1920, "height": 1080, "fps_cap": 20, "jpeg_quality": 92},
+    # Low is intentionally conservative: source selection is capped at 360p,
+    # and the Canvas target is kept at 640x360. Native MP4 is stream-copied,
+    # so fps_cap is informational here and does not re-encode/cap source FPS.
+    "low":  {"width": 640,  "height": 360, "fps_cap": 15, "jpeg_quality": 75},
+    "med":  {"width": 854,  "height": 480, "fps_cap": 20, "jpeg_quality": 82},
+    "high": {"width": 1280, "height": 720, "fps_cap": 24, "jpeg_quality": 86},
 }
