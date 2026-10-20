@@ -104,9 +104,7 @@ a { color: inherit; }
   animation: zoomInLogo 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.3s forwards;
 }
 
-.cyber-brand-intro span {
-  color: var(--red);
-}
+.cyber-brand-intro span { color: var(--red); }
 
 .intro-progress-bar {
   width: 180px;
@@ -416,12 +414,12 @@ h2 {
 
 .results-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
 }
 
-/* YOUTUBE-STYLE CARDS WITH 3D HOVER */
-.search-result {
+/* --- RESULT CARDS (Wird von search.js generiert) --- */
+.result {
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -435,92 +433,127 @@ h2 {
   color: inherit;
   cursor: pointer;
   transition: all .35s cubic-bezier(0.16, 1, 0.3, 1);
-  font: inherit;
   text-decoration: none;
 }
 
-.search-result:hover {
+.result:hover {
   transform: translateY(-8px) scale(1.02);
   border-color: rgba(255, 0, 51, 0.5);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8), 0 0 30px rgba(255, 0, 51, 0.2);
   background: rgba(20, 26, 42, 0.7);
 }
 
-.search-thumbnail {
-  display: block;
-  width: 100%;
+.thumb-wrap {
+  position: relative;
   aspect-ratio: 16/9;
-  object-fit: cover;
   background: #090d14;
+  overflow: hidden;
+}
+
+.thumb-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
   transition: transform 0.5s ease;
 }
 
-.search-result:hover .search-thumbnail {
+.result:hover .thumb-wrap img {
   transform: scale(1.08);
 }
 
-.search-details {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 18px;
+.playmark {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--tesla), var(--red));
+  color: #fff;
+  font-size: 16px;
+  box-shadow: 0 0 20px rgba(255, 0, 51, 0.6);
+  transform: scale(0.85);
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
-.search-title {
-  font: 700 17px/1.25 'Rajdhani', sans-serif;
-  color: #fff;
+.result:hover .playmark {
+  transform: scale(1.08);
+  box-shadow: 0 0 30px rgba(255, 0, 51, 0.9);
+}
+
+.result-body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.result-title {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  font: 700 16px/1.3 'Rajdhani', sans-serif;
+  color: #fff;
+  min-height: 42px;
 }
 
-.search-channel {
+.result-channel {
+  font-size: 13px;
   color: var(--muted);
-  font-size: 14px;
+  margin-top: 4px;
   font-weight: 600;
 }
 
-/* CHANNEL CARDS */
-.channel-card {
+.result-meta {
   display: flex;
-  gap: 16px;
   align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  font: 700 9px 'Orbitron', sans-serif;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: .1em;
+}
+
+.result-meta span:last-child { color: var(--cyan); }
+
+/* --- CHANNEL RESULTS (Wird von search.js generiert) --- */
+.channel-result {
+  display: block;
   text-decoration: none;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  background: var(--panel);
-  backdrop-filter: blur(12px);
-  transition: all .25s ease;
+  min-width: 0;
 }
 
-.channel-card:hover {
-  border-color: rgba(0, 240, 255, 0.5);
-  transform: translateY(-4px);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(0, 240, 255, 0.2);
+.channel-result .thumb-wrap {
+  background: radial-gradient(circle at center, rgba(0, 240, 255, 0.1), rgba(13, 17, 28, 0.8));
 }
 
-.channel-card img {
-  width: 72px;
-  height: 72px;
-  object-fit: cover;
-  border-radius: 50%;
-  background: #111;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+.channel-result .thumb-wrap img {
+  object-fit: contain;
+  padding: 16px;
 }
 
-.channel-info { min-width: 0; }
-.channel-title { font: 700 17px 'Rajdhani', sans-serif; color: #fff; }
-.channel-description { font-size: 13px; color: var(--muted); margin-top: 5px; }
+.channel-description {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
 
 .load-status {
   min-height: 26px;
-  padding: 12px 0;
+  padding: 20px 0;
+  text-align: center;
   color: var(--cyan);
   font: 700 12px 'Orbitron', sans-serif;
   letter-spacing: 1px;
-  text-align: center;
 }
 
 #load-sentinel { height: 2px; }
@@ -540,6 +573,10 @@ footer {
 
 footer b { color: var(--red); }
 
+@media(max-width:800px) {
+  .results-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media(max-width:760px) {
   .shell { padding: 0 15px 30px; }
   .cyber-header { margin: 0 -15px; padding: 12px 15px; flex-wrap: wrap; gap: 12px; }
@@ -555,7 +592,15 @@ footer b { color: var(--red); }
   .results-grid { grid-template-columns: 1fr; gap: 15px; }
   .search-button { padding: 11px 15px; }
   .search-tab { flex: 1; text-align: center; }
-  .channel-card img { width: 58px; height: 58px; }
+}
+
+@media(max-width:540px) {
+  .results-grid { grid-template-columns: 1fr; gap: 13px; }
+  .result { display: grid; grid-template-columns: 42% 1fr; }
+  .thumb-wrap { height: 100%; aspect-ratio: auto; }
+  .result-body { padding: 12px; }
+  .result-title { font-size: 12px; min-height: 0; }
+  .result-meta { margin-top: 10px; }
 }
 </style>
 </head>
@@ -616,8 +661,8 @@ footer b { color: var(--red); }
 </section>
 
 <footer>
-  <span>CYBER.play <b>●</b> </span>
-  <span></span>
+  <span>CYBER.play <b>●</b> SEARCH</span>
+  <span>PLAYBACK OPENS IN A SEPARATE VIEW</span>
 </footer>
 </main>
 
