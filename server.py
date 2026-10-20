@@ -245,49 +245,42 @@ async def audio_stream(request: Request):
 
 
 def _native_mp4_command(session: Session) -> list[str]:
-    """Create a browser-compatible, video-only fragmented MP4 stream.
+    """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
 
-    Audio is served separately by /audio. The Canvas video stream therefore
-    contains only video. Re-encoding to H.264/yuv420p avoids passing through
-    source codecs or pixel formats that a browser may not decode reliably.
-    The low-latency settings are intended for live streaming to the Canvas.
+    No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
+    fragmented MP4 so the browser can decode them natively while JavaScript
+    draws each decoded frame to the visible Canvas.
     """
     media = session.media
     if media is None:
         raise ValueError("media is not ready")
 
-    return [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-nostdin",
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
         *_ffmpeg_input_header_args(media.video_headers),
         "-i", media.video_url,
-        # The separate /audio endpoint owns audio playback.
-        "-map", "0:v:0",
-        "-an",
-        "-sn",
-        "-dn",
-        # H.264 is broadly supported by Chromium-based browsers.
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-tune", "zerolatency",
-        "-pix_fmt", "yuv420p",
-        "-profile:v", "main",
-        "-g", "60",
-        "-keyint_min", "60",
-        "-sc_threshold", "0",
-        # Keep output size and CPU use reasonable while preserving motion.
-        "-b:v", "2500k",
-        "-maxrate", "3000k",
-        "-bufsize", "5000k",
-        # Fragmented MP4 can be consumed before the stream ends.
+    ]
+    if media.audio_url:
+        cmd.extend([
+            "-thread_queue_size", "512",
+            *_ffmpeg_input_header_args(media.audio_headers),
+            "-i", media.audio_url,
+            "-map", "0:v:0", "-map", "1:a:0",
+        ])
+    else:
+        # Optional audio map means a progressive video-only format still works,
+        # while muxed MP4 sources keep their original audio track.
+        cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+
+    cmd.extend([
+        "-c:v", "copy", "-c:a", "copy",
+        "-sn", "-dn",
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         "-flush_packets", "1",
-        "-f", "mp4",
-        "pipe:1",
-    ]
+        "-f", "mp4", "pipe:1",
+    ])
+    return cmd
 
 
 async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:
@@ -374,7 +367,7 @@ async def native_canvas_media(request: Request):
 
     stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
     log.info(
-        "native Canvas video-only stream opened session=%s format=%s audio_separate=%s",
+        "native Canvas stream opened session=%s format=%s muxed_audio=%s",
         session_id, session.media.format_note, bool(session.media.audio_url),
     )
     return StreamingResponse(
