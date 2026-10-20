@@ -114,11 +114,7 @@ def _build_ffmpeg_cmd(
         "-hide_banner",
         "-loglevel", "warning",
         "-nostdin",
-        # The media URL is a direct CDN stream; avoid input-side -re throttling,
-        # which can add latency when network reads are already paced.
-        # Keep FFmpeg probing small so the first Canvas frame appears sooner.
-        "-probesize", "32768",
-        "-analyzeduration", "0",
+        "-re",
         *_ffmpeg_input_header_args(headers),
         "-i", media_url,
         "-an",
@@ -198,8 +194,9 @@ class VideoPipeline:
         self.frames_read = 0
         self.frames_dropped = 0
         self.frames_sent = 0
-        # Coalesce cross-thread frame notifications so a slow event loop cannot
-        # accumulate thousands of call_soon_threadsafe callbacks.
+        # Keep only the newest frame waiting to cross from FFmpeg's reader
+        # thread to asyncio. Without coalescing, call_soon_threadsafe callbacks
+        # can accumulate even when the asyncio queue itself is bounded.
         self._latest_thread_frame: Optional[bytes] = None
         self._enqueue_scheduled = False
         self._enqueue_lock = threading.Lock()
@@ -330,10 +327,7 @@ class VideoPipeline:
                 jpeg = bytes(buffer[:end + 2])
                 del buffer[:end + 2]
                 self.frames_read += 1
-                try:
-                    self._schedule_latest_frame(jpeg, loop)
-                except RuntimeError:
-                    return
+                self._schedule_latest_frame(jpeg, loop)
             # Defensive guard against an invalid stream growing without bound.
             if len(buffer) > 8 * 1024 * 1024:
                 log.warning("MJPEG frame buffer exceeded 8 MiB; resynchronising")
@@ -353,7 +347,7 @@ class VideoPipeline:
                 log.warning("ffmpeg: %s", line)
 
     def _schedule_latest_frame(self, frame: bytes, loop: asyncio.AbstractEventLoop) -> None:
-        """Keep only the newest not-yet-enqueued frame across the worker boundary."""
+        """Coalesce frames before scheduling onto the asyncio loop."""
         with self._enqueue_lock:
             if self._latest_thread_frame is not None:
                 self.frames_dropped += 1
@@ -369,7 +363,7 @@ class VideoPipeline:
                 self._latest_thread_frame = None
 
     def _drain_latest_frame(self) -> None:
-        """Runs on the asyncio loop; enqueue at most one fresh frame per callback."""
+        """Runs on the event loop and enqueues at most one current frame."""
         with self._enqueue_lock:
             frame = self._latest_thread_frame
             self._latest_thread_frame = None
