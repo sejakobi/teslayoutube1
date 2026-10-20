@@ -245,11 +245,11 @@ async def audio_stream(request: Request):
 
 
 def _native_mp4_command(session: Session) -> list[str]:
-    """Remux the source streams without re-encoding, as in the prior version.
+    """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
 
-    Keep the original video codec and mux audio only when a separate source
-    audio URL exists. The browser's existing Canvas/WebCodecs path consumes
-    the fragmented MP4 output.
+    No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
+    fragmented MP4 so the browser can decode them natively while JavaScript
+    draws each decoded frame to the visible Canvas.
     """
     media = session.media
     if media is None:
@@ -269,6 +269,8 @@ def _native_mp4_command(session: Session) -> list[str]:
             "-map", "0:v:0", "-map", "1:a:0",
         ])
     else:
+        # Optional audio map means a progressive video-only format still works,
+        # while muxed MP4 sources keep their original audio track.
         cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
 
     cmd.extend([

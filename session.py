@@ -135,23 +135,18 @@ class SessionManager:
                     headers=media.video_headers,
                     display_mode="ascii",
                 )
-            # Canvas now consumes the fragmented-MP4 endpoint and decodes video
-            # in the browser with WebCodecs; do not also run the JPEG/WebSocket
-            # pipeline in parallel. ASCII mode keeps the legacy pipeline.
-            if session.display_mode == "ascii":
-                pipeline.start()
-            else:
-                pipeline = None
+            pipeline.start()
 
-            # Keep the separate audio endpoint for broad desktop compatibility.
+            # Both modes use a separate MP3 stream; Canvas video is delivered
+            # as indexed JPEG frames over /ws/video and painted into <canvas>.
             audio_src = media.audio_url if media.audio_url else media.video_url
             audio_headers = media.audio_headers if media.audio_url else media.video_headers
             audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
             audio_pipeline.start()
             if session.display_mode == "canvas":
                 log.info(
-                    "session %s: WebCodecs Canvas selected %dx%d; fragmented MP4 + separate audio started",
-                    session_id, int(canvas_cfg["width"]), int(canvas_cfg["height"]),
+                    "session %s: WebSocket Canvas selected %dx%d @ %dfps; separate audio started",
+                    session_id, int(canvas_cfg["width"]), int(canvas_cfg["height"]), int(canvas_cfg["fps_cap"]),
                 )
 
             session.media = media
