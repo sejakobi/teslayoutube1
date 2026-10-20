@@ -1,58 +1,68 @@
+(() => {
 'use strict';
-const form=document.getElementById('search-form');
-const input=document.getElementById('search-query');
-const button=document.getElementById('search-button');
-const results=document.getElementById('search-results');
-const message=document.getElementById('search-message');
-const title=document.getElementById('results-title');
-const count=document.getElementById('results-count');
-const loadMore=document.getElementById('load-more');
-const pageSize=document.getElementById('page-size');
-const tabs=[...document.querySelectorAll('.tab')];
-let requestNo=0, searchType='video', nextPageToken='', currentQuery='', totalLoaded=0;
+const form = document.getElementById('search-form');
+const input = document.getElementById('search-query');
+const button = document.getElementById('search-button');
+const results = document.getElementById('search-results');
+const message = document.getElementById('search-message');
+const title = document.getElementById('results-title');
+const count = document.getElementById('results-count');
+const sentinel = document.getElementById('load-sentinel');
+const loadStatus = document.getElementById('load-status');
+const tabs = [...document.querySelectorAll('.search-tab')];
+let requestNo = 0, query = '', kind = 'video', nextPageToken = '', loading = false, finished = false, totalShown = 0;
 
-function setMessage(text, kind='') { message.className='message'+(kind?' '+kind:''); message.textContent=text; }
+function setMessage(text, state='') { message.className = 'message' + (state ? ' ' + state : ''); message.textContent = text; }
 function makeCard(item) {
-  const card=document.createElement(item.type==='channel'?'a':'button');
-  card.className='result'+(item.type==='channel'?' channel-result':'');
-  if(item.type==='channel') { card.href=item.url||('https://www.youtube.com/channel/'+encodeURIComponent(item.channel_id||'')); card.target='_blank'; card.rel='noopener noreferrer'; }
-  else card.type='button';
-  const wrap=document.createElement('span'); wrap.className='thumb-wrap'+(item.type==='channel'?' channel-thumb':'');
-  const img=document.createElement('img'); img.loading='lazy'; img.alt=''; img.src=item.thumbnail||''; img.onerror=()=>{img.style.visibility='hidden';}; wrap.append(img);
-  const mark=document.createElement('span'); mark.className='playmark'; mark.textContent=item.type==='channel'?'↗':'▶'; wrap.append(mark);
-  const body=document.createElement('span'); body.className='result-body';
-  const t=document.createElement('span'); t.className='result-title'; t.textContent=item.title||'Unbenannt';
-  const ch=document.createElement('span'); ch.className='result-channel'; ch.textContent=item.type==='channel'?'YouTube-Kanal':(item.channel||'Unbekannter Kanal');
-  body.append(t,ch);
-  if(item.type==='channel'&&item.description){const d=document.createElement('span');d.className='channel-description';d.textContent=item.description;body.append(d);}
-  const meta=document.createElement('span');meta.className='result-meta';
-  const m1=document.createElement('span');m1.textContent=item.type==='channel'?'KANAL':'VIDEO';
-  const m2=document.createElement('span');m2.textContent=item.type==='channel'?'KANAL ÖFFNEN ↗':'ABSPIELEN ↗';meta.append(m1,m2);body.append(meta);card.append(wrap,body);
-  if(item.type==='video') card.addEventListener('click',()=>{if(item.selection)location.href='/watch?selection='+encodeURIComponent(item.selection);});
+  const isChannel = kind === 'channel';
+  const card = document.createElement(isChannel ? 'a' : 'button');
+  card.className = 'result' + (isChannel ? ' channel-result' : '');
+  if (isChannel) { card.href = 'https://www.youtube.com/channel/' + encodeURIComponent(item.channel_id); card.target = '_blank'; card.rel = 'noopener noreferrer'; }
+  else { card.type = 'button'; }
+  const wrap = document.createElement('span'); wrap.className = 'thumb-wrap' + (isChannel ? ' channel-thumb' : '');
+  const img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = item.thumbnail || ''; wrap.append(img);
+  if (!isChannel) { const mark = document.createElement('span'); mark.className = 'playmark'; mark.textContent = '▶'; wrap.append(mark); }
+  const body = document.createElement('span'); body.className = 'result-body';
+  const t = document.createElement('span'); t.className = 'result-title'; t.textContent = item.title || (isChannel ? 'Unbekannter Kanal' : 'Unbenanntes Video');
+  const ch = document.createElement('span'); ch.className = 'result-channel'; ch.textContent = isChannel ? 'YOUTUBE-KANAL' : (item.channel || 'Unbekannter Kanal');
+  body.append(t, ch);
+  if (isChannel && item.description) { const desc = document.createElement('span'); desc.className = 'channel-description'; desc.textContent = item.description; body.append(desc); }
+  const meta = document.createElement('span'); meta.className = 'result-meta';
+  const m1 = document.createElement('span'); m1.textContent = isChannel ? 'CHANNEL' : 'VIDEO';
+  const m2 = document.createElement('span'); m2.textContent = isChannel ? 'KANAL ÖFFNEN ↗' : 'ABSPIELEN ↗';
+  meta.append(m1,m2); body.append(meta); card.append(wrap,body);
+  if (!isChannel) card.addEventListener('click', () => { if (item.selection) location.href = '/watch?selection=' + encodeURIComponent(item.selection); });
   return card;
 }
-async function runSearch({append=false}={}) {
-  const q=append?currentQuery:input.value.trim(); if(!q)return;
-  if(!append){currentQuery=q;nextPageToken='';totalLoaded=0;results.replaceChildren();}
-  const id=append?requestNo:++requestNo;
-  button.disabled=true;loadMore.disabled=true;loadMore.hidden=true;
-  setMessage(append?'Weitere Ergebnisse werden geladen …':'Suche läuft …','loading');
-  title.textContent=searchType==='channel'?'Kanäle':'Suchergebnisse';count.textContent='SEARCHING';
+async function loadPage(reset=false) {
+  if (loading || (!reset && (finished || !nextPageToken))) return;
+  if (reset) { requestNo++; query = input.value.trim(); nextPageToken = ''; finished = false; totalShown = 0; results.replaceChildren(); loadStatus.textContent = ''; }
+  if (!query) { setMessage('Bitte gib zuerst einen Suchbegriff ein.'); return; }
+  const id = requestNo; loading = true; button.disabled = true; tabs.forEach(t => t.disabled = true);
+  if (reset) { setMessage('Suche läuft …', 'loading'); title.textContent = kind === 'channel' ? 'Kanäle' : 'Videos'; count.textContent = 'SUCHE …'; }
+  else loadStatus.textContent = 'Weitere Ergebnisse werden geladen …';
   try {
-    const params=new URLSearchParams({q,search_type:searchType,max_results:pageSize.value});
-    if(append&&nextPageToken)params.set('page_token',nextPageToken);
-    const r=await fetch('/api/search?'+params.toString(),{headers:{'Accept':'application/json'}});const data=await r.json();
-    if(id!==requestNo)return;if(!r.ok)throw new Error(data.error||`Suche fehlgeschlagen (${r.status})`);
-    const items=data.results||[];nextPageToken=data.next_page_token||'';totalLoaded+=items.length;
-    for(const item of items)results.append(makeCard(item));
-    count.textContent=totalLoaded+' GELADEN';
-    if(!totalLoaded){setMessage(searchType==='channel'?'Keine passenden Kanäle gefunden.':'Keine passenden Videos gefunden.');}
-    else setMessage(searchType==='channel'?'Kanäle gefunden. Wähle einen Kanal, um ihn auf YouTube zu öffnen.':'Wähle ein Video, um die separate Canvas-Abspielseite zu öffnen.');
-    loadMore.hidden=!nextPageToken;loadMore.disabled=false;
-  } catch(err){if(id===requestNo){setMessage(err.message||'Die Suche ist fehlgeschlagen.');count.textContent='ERROR';loadMore.hidden=true;}}
-  finally{if(id===requestNo){button.disabled=false;loadMore.disabled=false;}}
+    const params = new URLSearchParams({q:query, search_type:kind, max_results:'24'});
+    if (nextPageToken) params.set('page_token', nextPageToken);
+    const response = await fetch('/api/search?' + params.toString(), {headers:{Accept:'application/json'}});
+    const data = await response.json();
+    if (id !== requestNo) return;
+    if (!response.ok) throw new Error(data.error || `Suche fehlgeschlagen (${response.status})`);
+    const items = data.results || [];
+    items.forEach(item => results.append(makeCard(item)));
+    totalShown += items.length; nextPageToken = data.next_page_token || ''; finished = !nextPageToken;
+    count.textContent = `${totalShown} ${kind === 'channel' ? 'KANÄLE' : 'VIDEOS'}`;
+    if (reset) setMessage(items.length ? (kind === 'channel' ? 'Kanäle gefunden. Scrolle nach unten, um automatisch weitere Treffer zu laden.' : 'Videos gefunden. Scrolle nach unten, um automatisch weitere Treffer zu laden.') : 'Keine Treffer gefunden. Versuche einen anderen Suchbegriff.');
+    loadStatus.textContent = finished ? 'Alle von YouTube verfügbaren Suchseiten wurden geladen.' : '';
+    if (!items.length && !totalShown) finished = true;
+  } catch (err) {
+    if (id === requestNo) { if (!totalShown) setMessage(err.message || 'Die Suche ist fehlgeschlagen.'); else loadStatus.textContent = 'Nachladen fehlgeschlagen: ' + (err.message || 'Unbekannter Fehler') + ' — scrolle erneut, um es nochmals zu versuchen.'; }
+  } finally {
+    if (id === requestNo) { loading = false; button.disabled = false; tabs.forEach(t => t.disabled = false); }
+  }
 }
-form.addEventListener('submit',e=>{e.preventDefault();runSearch();});
-loadMore.addEventListener('click',()=>{if(nextPageToken)runSearch({append:true});});
-tabs.forEach(tab=>tab.addEventListener('click',()=>{searchType=tab.dataset.type;tabs.forEach(t=>{const active=t===tab;t.classList.toggle('active',active);t.setAttribute('aria-pressed',String(active));});if(input.value.trim())runSearch();else{title.textContent=searchType==='channel'?'Kanäle':'Entdecken';setMessage(searchType==='channel'?'Suche nach Kanälen, um passende Creator zu finden.':'Gib oben einen Suchbegriff ein, um Videos zu laden.');}}));
-pageSize.addEventListener('change',()=>{if(input.value.trim())runSearch();});
+form.addEventListener('submit', e => { e.preventDefault(); loadPage(true); });
+tabs.forEach(tab => tab.addEventListener('click', () => { if (kind === tab.dataset.kind) return; kind = tab.dataset.kind; tabs.forEach(t => { const active = t === tab; t.classList.toggle('active', active); t.setAttribute('aria-pressed', String(active)); }); if (input.value.trim()) loadPage(true); else { results.replaceChildren(); count.textContent = 'BEREIT'; title.textContent = kind === 'channel' ? 'Kanäle' : 'Videos'; setMessage('Gib oben einen Suchbegriff ein, um ' + (kind === 'channel' ? 'Kanäle' : 'Videos') + ' zu finden.'); } }));
+const observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting) && query && !loading && !finished && nextPageToken) loadPage(false); }, {rootMargin:'900px 0px'});
+observer.observe(sentinel);
+})();
