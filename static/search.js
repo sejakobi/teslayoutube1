@@ -12,14 +12,6 @@ const sentinel = document.getElementById('load-sentinel');
 const loadStatus = document.getElementById('load-status');
 const tabs = [...document.querySelectorAll('.search-tab')];
 
-// Keep duration badges styled even if the site's stylesheet is customized.
-if (!document.getElementById('asciline-duration-style')) {
-  const style = document.createElement('style');
-  style.id = 'asciline-duration-style';
-  style.textContent = `.thumb-wrap{position:relative}.duration-badge{position:absolute;right:7px;bottom:7px;z-index:2;padding:3px 6px;border-radius:5px;background:rgba(0,0,0,.88);color:#fff;font-size:12px;font-weight:700;line-height:1.2;letter-spacing:.02em;box-shadow:0 1px 4px #0008;pointer-events:none}`;
-  document.head.append(style);
-}
-
 const STORAGE_KEY = 'asciline_search_state_v1';
 let requestNo = 0;
 let query = '';
@@ -86,9 +78,9 @@ function makeCard(item) {
 
   if (isChannel) {
     if (item.channel_id) {
-      // Open the channel inside ASCILINE and preserve the search state.
-      card.href = '/channel/' + encodeURIComponent(item.channel_id);
-      card.addEventListener('click', () => saveState());
+      card.href = 'https://www.youtube.com/channel/' + encodeURIComponent(item.channel_id);
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
     } else {
       card.href = '#';
       card.addEventListener('click', event => event.preventDefault());
@@ -110,13 +102,6 @@ function makeCard(item) {
     mark.className = 'playmark';
     mark.textContent = '▶';
     wrap.append(mark);
-    if (item.duration) {
-      const duration = document.createElement('span');
-      duration.className = 'duration-badge';
-      duration.textContent = item.duration;
-      duration.setAttribute('aria-label', 'Videolänge ' + item.duration);
-      wrap.append(duration);
-    }
   }
 
   const body = document.createElement('span');
