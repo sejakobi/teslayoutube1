@@ -38,7 +38,7 @@ SERVER_DEFAULTS = {
 CANVAS_PRESETS = {
     # Keep a moderate cadence and improve JPEG quality. The browser timestamps
     # Canvas frames on arrival so occasional CDN stalls do not poison the clock.
-    "low":  {"width": 640,  "height": 360, "fps_cap": 20, "jpeg_quality": 65},
+    "low":  {"width": 640,  "height": 360, "fps_cap": 20, "jpeg_quality": 70},
     "med":  {"width": 1280, "height": 720, "fps_cap": 20, "jpeg_quality": 90},
     "high": {"width": 1920, "height": 1080, "fps_cap": 20, "jpeg_quality": 92},
 }
