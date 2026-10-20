@@ -34,7 +34,7 @@ _QB_BY_MODE = {1: 0, 2: 5, 3: 3, 4: 2, 5: 0}
 
 # At-most-this-many encoded frames waiting for the consumer.  With ffmpeg
 # `-re` paced at the source frame rate the queue rarely exceeds 1.
-_FRAME_QUEUE_MAX = 2
+_FRAME_QUEUE_MAX = 1
 
 _AUDIO_CHUNK_SIZE = 4096
 
@@ -95,7 +95,7 @@ def _build_ffmpeg_cmd(
         height = int(frame_height or 360)
         fps = max(1, min(30, int(fps_cap or preset.fps_cap)))
         video_filter = (
-            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=bicubic,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=fast_bilinear,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         )
         # FFmpeg's MJPEG qscale runs in the opposite direction to a typical
@@ -114,9 +114,9 @@ def _build_ffmpeg_cmd(
         "-hide_banner",
         "-loglevel", "warning",
         "-nostdin",
-        "-re",
-        # The media URL is already a direct stream URL from yt-dlp. Keep
-        # FFmpeg's probing window small so the first Canvas frame appears sooner.
+        # The media URL is a direct CDN stream; avoid input-side -re throttling,
+        # which can add latency when network reads are already paced.
+        # Keep FFmpeg probing small so the first Canvas frame appears sooner.
         "-probesize", "32768",
         "-analyzeduration", "0",
         *_ffmpeg_input_header_args(headers),
@@ -198,6 +198,11 @@ class VideoPipeline:
         self.frames_read = 0
         self.frames_dropped = 0
         self.frames_sent = 0
+        # Coalesce cross-thread frame notifications so a slow event loop cannot
+        # accumulate thousands of call_soon_threadsafe callbacks.
+        self._latest_thread_frame: Optional[bytes] = None
+        self._enqueue_scheduled = False
+        self._enqueue_lock = threading.Lock()
 
     def init_message(self) -> str:
         """Text handshake selecting the client-side frame decoder."""
@@ -290,7 +295,7 @@ class VideoPipeline:
                     break  # EOF or partial final raw frame
                 self.frames_read += 1
                 data = b"".join(chunks) if len(chunks) > 1 else chunks[0]
-                loop.call_soon_threadsafe(self._enqueue, data)
+                self._schedule_latest_frame(data, loop)
         except (OSError, RuntimeError) as exc:
             if not self._stop.is_set():
                 log.warning("video reader stopped: %s", exc)
@@ -326,7 +331,7 @@ class VideoPipeline:
                 del buffer[:end + 2]
                 self.frames_read += 1
                 try:
-                    loop.call_soon_threadsafe(self._enqueue, jpeg)
+                    self._schedule_latest_frame(jpeg, loop)
                 except RuntimeError:
                     return
             # Defensive guard against an invalid stream growing without bound.
@@ -346,6 +351,31 @@ class VideoPipeline:
             line = raw.decode("utf-8", errors="replace").rstrip()
             if line:
                 log.warning("ffmpeg: %s", line)
+
+    def _schedule_latest_frame(self, frame: bytes, loop: asyncio.AbstractEventLoop) -> None:
+        """Keep only the newest not-yet-enqueued frame across the worker boundary."""
+        with self._enqueue_lock:
+            if self._latest_thread_frame is not None:
+                self.frames_dropped += 1
+            self._latest_thread_frame = frame
+            if self._enqueue_scheduled:
+                return
+            self._enqueue_scheduled = True
+        try:
+            loop.call_soon_threadsafe(self._drain_latest_frame)
+        except RuntimeError:
+            with self._enqueue_lock:
+                self._enqueue_scheduled = False
+                self._latest_thread_frame = None
+
+    def _drain_latest_frame(self) -> None:
+        """Runs on the asyncio loop; enqueue at most one fresh frame per callback."""
+        with self._enqueue_lock:
+            frame = self._latest_thread_frame
+            self._latest_thread_frame = None
+            self._enqueue_scheduled = False
+        if frame is not None:
+            self._enqueue(frame)
 
     def _enqueue(self, raw_bgr: bytes) -> None:
         """Loop-thread: enqueue, dropping the oldest frame on overflow."""
