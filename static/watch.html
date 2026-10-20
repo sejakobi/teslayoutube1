@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#f5f5f7">
   <meta name="color-scheme" content="light dark">
-  <title>ASCILINE</title>
+  <title>ASCILINE Media Hub</title>
   <link rel="stylesheet" href="/static/style.css?v=webcodecs-canvas-1">
-  <link rel="stylesheet" href="/static/watch.css?v=webcodecs-canvas-1">
+  <link rel="stylesheet" href="/static/watch.css?v=asciline-media-hub-1">
 </head>
 <body class="watch-page">
   <header id="topbar">
@@ -15,7 +15,7 @@
     <input id="query-input" type="text" aria-label="Suchbegriff" autocomplete="off">
     <button id="btn-search" class="hidden" type="button">Suchen</button>
     <button id="btn-play" class="hidden" type="button">Start</button>
-    <button id="btn-stop" class="hidden" type="button">Stop</button>
+    <button id="btn-stop" class="hidden" type="button">← Mediathek</button>
   </header>
   <div id="subbar">
     <div id="preset-group" role="group" aria-label="Qualität">
@@ -41,8 +41,8 @@
     <pre id="ascii-player"></pre>
     <canvas id="ascii-canvas" aria-label="ASCILINE Bildfläche"></canvas>
     <div id="idle-overlay"><div id="idle-content">
-      <div id="idle-logo">ASCILINE</div><div id="idle-sub">A quieter kind of screen.</div>
-      <div id="idle-arrow">Das Video wird automatisch geladen.</div>
+      <div id="idle-logo">ASCILINE</div><div id="idle-sub">ASCILINE MEDIA HUB</div>
+      <div id="idle-arrow">Die ausgewählte Wiedergabe wird vorbereitet.</div>
     </div></div>
     <div id="watch-chrome"><a href="/" class="back-link">← Suche</a><div class="watch-wordmark">ASCILINE <span>CANVAS VIEW</span></div></div>
     <div id="watch-error" role="status" aria-live="polite"></div>
@@ -50,5 +50,5 @@
   <footer id="statusbar"><span id="status-title" class="status-segment"></span><span id="status-live" class="live-badge hidden">● LIVE</span><span id="status-state" class="status-segment status-state">Bereit</span><span id="status-fps" class="status-segment status-fps"></span><span id="status-perf-hint" class="status-segment status-perf hidden"></span></footer>
   <audio id="ascii-audio" preload="auto"></audio>
   <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.4/dist/mp4box.all.min.js"></script>
-  <script src="/static/app.js?v=asciline-playback-rescue-1" defer></script>
+  <script src="/static/app.js?v=asciline-audio-clock-sync-2" defer></script>
 </body></html>
