@@ -429,15 +429,22 @@ function startWebCodecsDrawLoop(state) {
     const draw = (now) => {
         state.raf = 0;
         if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
-        const audioClock = audioEl && !audioEl.paused && Number.isFinite(audioEl.currentTime)
-            ? audioEl.currentTime : (now - state.clockStart) / 1000;
-        // Keep a small presentation queue and draw only frames whose timestamps
-        // are due. This avoids dumping decoded frames as a burst after buffering.
-        while (state.frames.length > 1 && state.frames[0].timestamp / 1e6 < audioClock - 0.12) {
-            const stale = state.frames.shift();
-            try { stale.close(); } catch (_) {}
+        // Video presentation uses its own monotonic wall clock. The separate
+        // audio element is deliberately NOT the master clock: some streamed MP3
+        // responses report currentTime=0 while still appearing to be playing,
+        // which otherwise freezes the canvas on its first frame.
+        if (state.playbackStart === null && state.frames.length) {
+            state.playbackStart = now - (state.frames[0].timestamp / 1000);
         }
-        if (state.frames.length && state.frames[0].timestamp / 1e6 <= audioClock + 0.035) {
+        const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+        // Discard only already-decoded frames that are too late, and render the
+        // newest due frame. Dropping decoded VideoFrames is safe; dropping encoded
+        // delta samples before decoding can corrupt the prediction chain.
+        while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
+            const older = state.frames.shift();
+            try { older.close(); } catch (_) {}
+        }
+        if (state.frames.length && state.frames[0].timestamp / 1e6 <= videoClock + 0.050) {
             const frame = state.frames.shift();
             try {
                 if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
@@ -478,8 +485,8 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     stopNativeCanvasSource();
     const state = {
         stopped: false, file: null, decoder: null, reader: null, raf: 0,
-        frames: [], clockStart: performance.now(), drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
-        track: null, timescale: 1, sampleCount: 0, decoderConfigured: false
+        frames: [], clockStart: performance.now(), playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
+        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false
     };
     webCodecsState = state;
     setStatus('BUFFERING · WEBCODECS', 'resolving');
@@ -526,7 +533,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
                     output(frame) {
                         if (state.stopped || webCodecsState !== state) { frame.close(); return; }
                         state.frames.push(frame);
-                        while (state.frames.length > 8) {
+                        while (state.frames.length > 18) {
                             const old = state.frames.shift();
                             try { old.close(); } catch (_) {}
                         }
@@ -557,11 +564,16 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
         mp4File.onSamples = (trackId, user, samples) => {
             if (state.stopped || !state.decoderConfigured || !state.decoder) return;
             for (const sample of samples) {
-                if (state.decoder.decodeQueueSize > 12) continue;
+                // Do not discard arbitrary delta frames when the decoder is busy:
+                // losing one can corrupt the GOP and leave the canvas frozen until
+                // the next keyframe. Normalize timestamps to the first sample so
+                // they share the same zero-based clock as audio.currentTime.
+                if (state.timestampBase === null) state.timestampBase = sample.cts;
+                const timestamp = Math.round((sample.cts - state.timestampBase) * 1e6 / state.timescale);
                 try {
                     state.decoder.decode(new EncodedVideoChunk({
                         type: sample.is_sync ? 'key' : 'delta',
-                        timestamp: Math.round(sample.cts * 1e6 / state.timescale),
+                        timestamp: Math.max(0, timestamp),
                         duration: Math.max(1, Math.round(sample.duration * 1e6 / state.timescale)),
                         data: sample.data
                     }));
