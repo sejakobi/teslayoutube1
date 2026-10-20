@@ -1,0 +1,230 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+
+.watch-page {
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  background: #0f0f0f !important;
+  color: #f1f1f1 !important;
+  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+}
+
+.watch-page #topbar,
+.watch-page #subbar,
+.watch-page #statusbar,
+.watch-page #search-panel {
+  display: none !important;
+}
+
+/* Fullscreen Player Shell */
+.watch-page #player-container {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  min-height: 100vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: #000000 !important;
+  overflow: hidden !important;
+}
+
+.watch-page #ascii-canvas {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  display: block;
+}
+
+.watch-page #ascii-player {
+  display: none !important;
+}
+
+/* Idle / Ambient State Overlay */
+.watch-page #idle-overlay {
+  position: absolute !important;
+  inset: 0 !important;
+  background: radial-gradient(circle at center, #1f1f1f 0%, #0f0f0f 75%) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.watch-page #idle-content {
+  text-align: center;
+}
+
+.watch-page #idle-logo {
+  font-size: clamp(32px, 6vw, 64px) !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  color: #ffffff !important;
+  text-shadow: 0 0 20px rgba(255, 0, 0, 0.2);
+}
+
+.watch-page #idle-sub {
+  font-size: 11px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.2em !important;
+  color: #aaa !important;
+  margin-top: 8px !important;
+}
+
+.watch-page #idle-arrow {
+  font-size: 12px !important;
+  color: #888 !important;
+  margin-top: 12px !important;
+}
+
+/* Top Chrome Bar (Gradient Overlay at Top) */
+.watch-page #watch-chrome {
+  position: absolute;
+  z-index: 5;
+  inset: 0 0 auto 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%);
+}
+
+/* Back Button im YouTube Pill-Design */
+.watch-page .back-link {
+  pointer-events: auto;
+  color: #f1f1f1;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(39, 39, 39, 0.7);
+  backdrop-filter: blur(10px);
+  transition: background 0.2s, border-color 0.2s, transform 0.1s;
+}
+
+.watch-page .back-link:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.watch-page .watch-wordmark {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #f1f1f1;
+}
+
+.watch-page .watch-wordmark span {
+  font-size: 11px;
+  font-weight: 500;
+  color: #ff0000;
+  background: rgba(255, 0, 0, 0.15);
+  padding: 3px 8px;
+  border-radius: 12px;
+  margin-left: 10px;
+}
+
+/* YouTube Play-Overlay / Prompt */
+.watch-page .start-overlay {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 16px;
+  padding: 24px 32px;
+  background: rgba(15, 15, 15, 0.85);
+  color: #f1f1f1;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(16px);
+  transition: transform 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.watch-page .start-overlay:hover {
+  transform: translate(-50%, -50%) scale(1.03);
+  border-color: rgba(255, 0, 0, 0.5);
+  background: rgba(24, 24, 24, 0.95);
+}
+
+/* YouTube Red Circle Play Button Icon */
+.watch-page .start-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #ff0000;
+  color: #ffffff;
+  font-size: 20px;
+  letter-spacing: 0;
+  box-shadow: 0 4px 20px rgba(255, 0, 0, 0.5);
+  transition: transform 0.2s, background 0.2s;
+}
+
+.watch-page .start-overlay:hover .start-icon {
+  background: #cc0000;
+  transform: scale(1.08);
+}
+
+.watch-page .start-overlay small {
+  font-size: 11px;
+  color: #aaa;
+  font-weight: 400;
+}
+
+.watch-page .start-overlay.hidden {
+  display: none !important;
+}
+
+/* Error Banner */
+.watch-page #watch-error {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: 90vw;
+  color: #ff4e45;
+  background: rgba(40, 10, 10, 0.9);
+  border: 1px solid rgba(255, 78, 69, 0.3);
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: center;
+  backdrop-filter: blur(8px);
+}
+
+.watch-page #idle-overlay.hidden {
+  display: none !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .watch-page #watch-chrome {
+    padding: 12px;
+  }
+  
+  .watch-page .watch-wordmark span {
+    display: none;
+  }
+
+  .watch-page .start-overlay {
+    white-space: nowrap;
+    padding: 18px 24px;
+  }
+}
