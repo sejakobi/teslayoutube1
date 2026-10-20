@@ -1,0 +1,20 @@
+ASCILINE — KOMPLETT NEU AUFGETEILTE OBERFLÄCHE
+
+Dateien ersetzen: static/index.html, static/search.css, static/search.js, static/watch.html, static/watch.css, static/app.js sowie server.py. Die übrigen Dateien (config.py, pipeline.py, resolver.py, session.py, auth.py, pin.html, requirements.txt, render-build.sh und Umgebungsvariablen) bleiben aus dem nativen Canvas-Projekt erhalten.
+
+Architektur:
+- / zeigt nur Suche und Ergebnisse, kein Video-/Canvas-Element.
+- /watch?selection=<zufälliges Token> zeigt den Canvas-Player.
+- /api/search gibt keine YouTube-ID zurück, sondern ein kurzlebiges serverseitiges Auswahl-Token (30 Minuten).
+- /api/play löst dieses Token serverseitig in die Video-URL auf.
+- Die Wiedergabe nutzt den vorhandenen Native-Canvas-Pipeline-/Audio-/WebSocket-Code.
+
+Deployment:
+1. Sicherung des GitHub-Repositories erstellen.
+2. Die genannten Dateien im Repository ersetzen/ergänzen.
+3. Commit und Push.
+4. Render Deployment abwarten.
+5. Seite neu laden (Strg+F5) und Suche testen.
+6. Video öffnen, auf WIEDERGABE STARTEN klicken und ggf. LOW testen.
+
+Hinweis: Ein Token statt einer Video-ID verhindert die ID in der URL und im Suchergebnis-Payload. Es ist keine Garantie, dass die Medienquelle vor Browser-Entwicklertools verborgen bleibt. Die Wiedergabe wird im Canvas dargestellt, aber der Browser muss das Medium weiterhin decodieren.
