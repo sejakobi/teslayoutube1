@@ -677,10 +677,6 @@ function connectWs(sid) {
             }
             if (event.data.startsWith('CANVAS_INIT:')) {
                 wsRetryCount = 0;
-                // CANVAS_INIT announces JPEG frames over the WebSocket.
-                // Set the mode before binary frames arrive, otherwise they are
-                // incorrectly handled as ASCII data and the canvas stays frozen.
-                canvasVideoMode = true;
                 const p = event.data.split(':');
                 targetFps = parseFloat(p[1]);
                 const width = parseInt(p[2], 10);
@@ -819,10 +815,8 @@ async function doPlay() {
     updateTitle(data.title, data.is_live);
     
     idleOverlay.classList.add('hidden');
-    // Use the established WebSocket/JPEG Canvas pipeline for video frames.
-    // The visible output remains Canvas-only (no HTMLVideoElement); this avoids
-    // the separate fragmented-MP4/WebCodecs path that could freeze after startup.
-    // The CANVAS_INIT handler sets canvasVideoMode for incoming JPEG frames.
+    // Keep playback on the established WebSocket frame pipeline for both
+    // Canvas and ASCII. Canvas remains a canvas; no HTMLVideoElement is used.
     connectWs(sessionId);
     startPoll();
 }
