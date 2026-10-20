@@ -36,10 +36,10 @@ SERVER_DEFAULTS = {
 # Canvas-mode resolutions. Each preset controls the encoded video dimensions and frame rate.
 # Canvas frames are encoded by FFmpeg as MJPEG before they are sent over WebSocket.
 CANVAS_PRESETS = {
-    # Keep the default light enough for shared/cloud CPU, but improve its
-    # resolution and JPEG quality substantially over the former 640x360/q70.
-    # Higher presets are optional and require more bandwidth and CPU.
-    "low":  {"width": 960,  "height": 540,  "fps_cap": 20, "jpeg_quality": 88},
-    "med":  {"width": 1280, "height": 720,  "fps_cap": 20, "jpeg_quality": 90},
-    "high": {"width": 1920, "height": 1080, "fps_cap": 20, "jpeg_quality": 92},
+    # Higher native Canvas resolution and JPEG quality address the visibly
+    # soft 640x360/q70 default. The default remains moderate enough for cloud CPU.
+    "low":  {"width": 960,  "height": 540,  "fps_cap": 24, "jpeg_quality": 84},
+    "med":  {"width": 1280, "height": 720,  "fps_cap": 24, "jpeg_quality": 88},
+    # Full HD can be expensive on small shared instances; keep it at 20 FPS.
+    "high": {"width": 1920, "height": 1080, "fps_cap": 20, "jpeg_quality": 90},
 }
