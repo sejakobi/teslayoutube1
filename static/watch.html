@@ -7,14 +7,28 @@
   <meta name="color-scheme" content="dark">
   <title>Video Player</title>
   <style>
-    /* --- Modernes YouTube Dark Design für die Vollbild/Watch-Ansicht --- */
+/* --- CYBER.PLAY CORE THEME --- */
+    :root {
+      color-scheme: dark;
+      --bg: #020408;
+      --panel: rgba(13, 17, 28, 0.75);
+      --panel-border: rgba(255, 255, 255, 0.1);
+      --yt-red: #ff0033;
+      --tesla-red: #e82127;
+      --cyber-cyan: #00f0ff;
+      --text-main: #f0f4f9;
+      --text-muted: #8392a7;
+      --red: #ff3355;
+      --blur-val: 20px;
+    }
+
     .watch-page {
       margin: 0 !important;
       padding: 0 !important;
       overflow: hidden !important;
-      background-color: #0f0f0f !important;
-      color: #f1f1f1 !important;
-      font-family: "Roboto", "Arial", sans-serif !important;
+      background-color: var(--bg) !important;
+      color: var(--text-main) !important;
+      font-family: 'Rajdhani', sans-serif !important;
     }
 
     /* Ausblenden der Standard-Leisten im Vollbildmodus */
@@ -35,7 +49,7 @@
       margin: 0 !important;
       padding: 0 !important;
       border: 0 !important;
-      background-color: #0f0f0f !important;
+      background-color: #000 !important;
       overflow: hidden !important;
       display: flex;
       align-items: center;
@@ -55,11 +69,12 @@
       display: none !important;
     }
 
-    /* --- Schöner, moderner Ladebildschirm (Dark YouTube Style) --- */
+    /* --- Futuristischer CYBER.play Ladebildschirm --- */
     .watch-page #idle-overlay {
       position: absolute !important;
       inset: 0 !important;
-      background: radial-gradient(circle at center, #212121 0%, #0f0f0f 75%) !important;
+      background: radial-gradient(circle at center, rgba(13, 17, 28, 0.95) 0%, #020408 85%) !important;
+      backdrop-filter: blur(var(--blur-val));
       display: flex;
       align-items: center;
       justify-content: center;
@@ -74,15 +89,17 @@
       gap: 16px;
     }
 
-    /* Moderner CSS-Spinner */
+    /* Futuristischer Dual-Ring Neon Spinner */
     .watch-page #idle-content::before {
       content: "";
-      width: 44px;
-      height: 44px;
-      border: 3px solid rgba(255, 255, 255, 0.1);
-      border-top: 3px solid #3ea6ff;
+      width: 50px;
+      height: 50px;
+      border: 3px solid rgba(255, 0, 51, 0.15);
+      border-top: 3px solid var(--yt-red);
+      border-right: 3px solid var(--cyber-cyan);
       border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      animation: spin 0.8s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
+      box-shadow: 0 0 20px rgba(255, 0, 51, 0.4);
     }
 
     @keyframes spin {
@@ -91,25 +108,33 @@
     }
 
     .watch-page #idle-logo {
-      font-size: clamp(28px, 5vw, 56px) !important;
-      font-weight: 700;
-      letter-spacing: .15em !important;
-      color: #fff;
+      font-family: 'Orbitron', sans-serif !important;
+      font-size: clamp(28px, 5vw, 52px) !important;
+      font-weight: 900 !important;
+      letter-spacing: 2px !important;
+      color: #fff !important;
+      text-shadow: 0 0 25px rgba(255, 0, 51, 0.6);
     }
 
     .watch-page #idle-sub {
-      font-size: 13px !important;
-      letter-spacing: .15em !important;
-      color: #aaa !important;
+      font-family: 'Orbitron', sans-serif !important;
+      font-size: 11px !important;
+      letter-spacing: 4px !important;
+      color: var(--cyber-cyan) !important;
       text-transform: uppercase;
+      background: rgba(0, 240, 255, 0.08);
+      padding: 4px 12px;
+      border-radius: 20px;
+      border: 1px solid rgba(0, 240, 255, 0.25);
     }
 
     .watch-page #idle-arrow {
-      font-size: 12px !important;
-      color: #717171 !important;
+      font-size: 13px !important;
+      color: var(--text-muted) !important;
+      letter-spacing: 1px;
     }
 
-    /* --- Oberes Overlay (Zurück-Link & Titel) --- */
+    /* --- Oberes Glass Overlay (Zurück-Link & Wordmark) --- */
     .watch-page #watch-chrome {
       position: absolute;
       z-index: 5;
@@ -117,45 +142,58 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 20px 24px;
+      padding: 24px 32px;
       pointer-events: none;
-      background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+      background: linear-gradient(to bottom, rgba(2, 4, 8, 0.9), transparent);
     }
 
     .watch-page .back-link {
       pointer-events: auto;
-      color: #f1f1f1;
+      color: #fff;
       text-decoration: none;
-      font: 500 12px "Roboto", sans-serif;
-      letter-spacing: .05em;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      padding: 8px 14px;
-      border-radius: 20px;
-      background: rgba(33, 33, 33, 0.8);
-      backdrop-filter: blur(10px);
-      transition: background 0.2s;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      border: 1px solid var(--panel-border);
+      padding: 10px 20px;
+      border-radius: 30px;
+      background: rgba(13, 17, 28, 0.6);
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      transition: all 0.25s ease;
     }
 
     .watch-page .back-link:hover {
-      background: rgba(56, 56, 56, 0.9);
+      background: var(--yt-red);
+      border-color: var(--yt-red);
+      box-shadow: 0 0 20px rgba(255, 0, 51, 0.6);
+      transform: translateY(-2px);
     }
 
     .watch-page .watch-wordmark {
-      font: 700 12px "Roboto", sans-serif;
-      letter-spacing: .1em;
+      font-family: 'Orbitron', sans-serif;
+      font-weight: 900;
+      font-size: 14px;
+      letter-spacing: 1.5px;
       color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
 
     .watch-page .watch-wordmark span {
       font-size: 10px;
-      color: #3ea6ff;
-      margin-left: 8px;
-      background: rgba(62, 166, 255, 0.1);
-      padding: 3px 8px;
-      border-radius: 10px;
+      color: var(--cyber-cyan);
+      background: rgba(0, 240, 255, 0.1);
+      border: 1px solid rgba(0, 240, 255, 0.3);
+      padding: 3px 10px;
+      border-radius: 12px;
+      text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
     }
 
-    /* --- Start-Overlay (Play-Button) --- */
+    /* --- Start-Overlay (Schwebender Cyber-Play Button) --- */
     .watch-page .start-overlay {
       position: absolute;
       z-index: 7;
@@ -165,59 +203,73 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 12px;
+      gap: 14px;
       border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 16px;
-      padding: 24px 32px;
-      background: rgba(20, 20, 20, 0.9);
-      color: #f1f1f1;
-      font: 500 13px "Roboto", sans-serif;
+      border-radius: 24px;
+      padding: 28px 40px;
+      background: var(--panel);
+      color: #fff;
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 1px;
       cursor: pointer;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(20px);
-      transition: transform 0.2s, background 0.2s;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(255, 0, 51, 0.2);
+      backdrop-filter: blur(25px);
+      -webkit-backdrop-filter: blur(25px);
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .watch-page .start-overlay:hover {
-      background: rgba(35, 35, 35, 0.95);
-      transform: translate(-50%, -50%) scale(1.02);
+      background: rgba(22, 30, 48, 0.85);
+      border-color: var(--yt-red);
+      transform: translate(-50%, -50%) scale(1.05);
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.9), 0 0 40px rgba(255, 0, 51, 0.4);
     }
 
     .watch-page .start-icon {
       display: grid;
       place-items: center;
-      width: 56px;
-      height: 56px;
+      width: 60px;
+      height: 60px;
       border-radius: 50%;
-      background: #3ea6ff;
-      color: #0f0f0f;
-      font-size: 20px;
-      padding-left: 3px; /* Optische Zentrierung des Play-Zeichens */
+      background: linear-gradient(135deg, var(--tesla-red), var(--yt-red));
+      color: #fff;
+      font-size: 22px;
+      padding-left: 4px;
+      box-shadow: 0 0 25px rgba(255, 0, 51, 0.6);
     }
 
     .watch-page .start-overlay small {
-      font-size: 11px;
-      color: #aaa;
+      font-family: 'Orbitron', sans-serif;
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 1px;
     }
 
     .watch-page .start-overlay.hidden {
       display: none !important;
     }
 
+    /* --- Error Banner --- */
     .watch-page #watch-error {
       position: absolute;
       z-index: 8;
       left: 50%;
-      bottom: 30px;
+      bottom: 35px;
       transform: translateX(-50%);
       max-width: 90vw;
-      color: #ff8b8b;
-      font: 12px "Roboto", sans-serif;
+      color: var(--red);
+      font-family: 'Orbitron', sans-serif;
+      font-size: 11px;
+      letter-spacing: 1px;
       text-align: center;
-      background: rgba(20, 20, 20, 0.8);
-      padding: 8px 16px;
-      border-radius: 8px;
-      border: 1px solid rgba(255, 0, 0, 0.2);
+      background: rgba(13, 17, 28, 0.85);
+      backdrop-filter: blur(15px);
+      padding: 10px 20px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 51, 85, 0.4);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
     }
 
     .watch-page #idle-overlay.hidden {
@@ -225,12 +277,12 @@
     }
 
     @media (max-width: 600px) {
-      .watch-page #watch-chrome { padding: 12px; }
+      .watch-page #watch-chrome { padding: 16px; }
       .watch-page .watch-wordmark span { display: none; }
-      .watch-page .start-overlay { white-space: nowrap; padding: 16px 24px; }
+      .watch-page .start-overlay { white-space: nowrap; padding: 20px 28px; }
     }
 
-    /* Utility-Klassen für den Fall, dass die Seite im normalen Modus läuft */
+    /* Utility-Klasse */
     .hidden { display: none !important; }
   </style>
 </head>
@@ -267,9 +319,9 @@
     <canvas id="ascii-canvas" aria-label="Bildfläche"></canvas>
     <div id="idle-overlay">
       <div id="idle-content">
-        <div id="idle-logo">PLAYER</div>
+        <div id="idle-logo"></div>
         <div id="idle-sub"></div>
-        <div id="idle-arrow">Das Video wird geladen.</div>
+        <div id="idle-arrow"></div>
       </div>
     </div>
     <div id="watch-chrome">
