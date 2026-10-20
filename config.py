@@ -36,10 +36,10 @@ SERVER_DEFAULTS = {
 # Canvas-mode resolutions. Each preset controls the encoded video dimensions and frame rate.
 # Canvas frames are encoded by FFmpeg as MJPEG before they are sent over WebSocket.
 CANVAS_PRESETS = {
-    # All Canvas presets target 25 FPS. Low/Med should sustain this on modest
-    # instances; High targets the same cadence but may fall behind on limited CPU.
-    # jpeg_quality is translated to FFmpeg MJPEG qscale in pipeline.py.
-    "low":  {"width": 640,  "height": 360, "fps_cap": 25, "jpeg_quality": 70},
-    "med":  {"width": 854,  "height": 480, "fps_cap": 25, "jpeg_quality": 75},
-    "high": {"width": 1280, "height": 720, "fps_cap": 25, "jpeg_quality": 80},
+    # Keep the default light enough for shared/cloud CPU, but improve its
+    # resolution and JPEG quality substantially over the former 640x360/q70.
+    # Higher presets are optional and require more bandwidth and CPU.
+    "low":  {"width": 854,  "height": 480,  "fps_cap": 25, "jpeg_quality": 84},
+    "med":  {"width": 1280, "height": 720,  "fps_cap": 25, "jpeg_quality": 88},
+    "high": {"width": 1920, "height": 1080, "fps_cap": 25, "jpeg_quality": 90},
 }
