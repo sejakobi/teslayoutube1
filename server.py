@@ -218,42 +218,28 @@ async def audio_stream(request: Request):
 
 
 def _native_mp4_command(session: Session) -> list[str]:
-    """Create a stream-copy FFmpeg remux for browser-native Canvas playback.
+    """Create a video-only fragmented MP4 stream for Canvas/WebCodecs.
 
-    No video re-encoding occurs here. YouTube's H.264/AAC tracks are muxed into
-    fragmented MP4 so the browser can decode them natively while JavaScript
-    draws each decoded frame to the visible Canvas.
+    Video is stream-copied without re-encoding. Audio is delivered by the
+    separate AudioPipeline endpoint, so including an audio track here only
+    adds muxing work and can produce unnecessary MP4 codec warnings.
     """
     media = session.media
     if media is None:
         raise ValueError("media is not ready")
 
-    cmd = [
+    return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
         *_ffmpeg_input_header_args(media.video_headers),
         "-i", media.video_url,
-    ]
-    if media.audio_url:
-        cmd.extend([
-            "-thread_queue_size", "512",
-            *_ffmpeg_input_header_args(media.audio_headers),
-            "-i", media.audio_url,
-            "-map", "0:v:0", "-map", "1:a:0",
-        ])
-    else:
-        # Optional audio map means a progressive video-only format still works,
-        # while muxed MP4 sources keep their original audio track.
-        cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
-
-    cmd.extend([
-        "-c:v", "copy", "-c:a", "copy",
+        "-map", "0:v:0", "-an",
+        "-c:v", "copy",
         "-sn", "-dn",
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         "-flush_packets", "1",
         "-f", "mp4", "pipe:1",
-    ])
-    return cmd
+    ]
 
 
 async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:
@@ -340,7 +326,7 @@ async def native_canvas_media(request: Request):
 
     stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
     log.info(
-        "native Canvas stream opened session=%s format=%s muxed_audio=%s",
+        "native Canvas stream opened session=%s format=%s separate_audio_url=%s",
         session_id, session.media.format_note, bool(session.media.audio_url),
     )
     return StreamingResponse(
