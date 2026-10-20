@@ -3,15 +3,240 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f5f5f7">
-  <meta name="color-scheme" content="light dark">
-  <title>ASCILINE</title>
-  <link rel="stylesheet" href="/static/style.css?v=webcodecs-canvas-1">
-  <link rel="stylesheet" href="/static/watch.css?v=webcodecs-canvas-1">
+  <meta name="theme-color" content="#0f0f0f">
+  <meta name="color-scheme" content="dark">
+  <title>Video Player</title>
+  <style>
+    /* --- Modernes YouTube Dark Design für die Vollbild/Watch-Ansicht --- */
+    .watch-page {
+      margin: 0 !important;
+      padding: 0 !important;
+      overflow: hidden !important;
+      background-color: #0f0f0f !important;
+      color: #f1f1f1 !important;
+      font-family: "Roboto", "Arial", sans-serif !important;
+    }
+
+    /* Ausblenden der Standard-Leisten im Vollbildmodus */
+    .watch-page #topbar,
+    .watch-page #subbar,
+    .watch-page #statusbar,
+    .watch-page #search-panel {
+      display: none !important;
+    }
+
+    /* Vollbild Player Container */
+    .watch-page #player-container {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100dvh !important;
+      min-height: 100vh !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
+      background-color: #0f0f0f !important;
+      overflow: hidden !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .watch-page #ascii-canvas {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: contain !important;
+      display: block;
+    }
+
+    .watch-page #ascii-player {
+      display: none !important;
+    }
+
+    /* --- Schöner, moderner Ladebildschirm (Dark YouTube Style) --- */
+    .watch-page #idle-overlay {
+      position: absolute !important;
+      inset: 0 !important;
+      background: radial-gradient(circle at center, #212121 0%, #0f0f0f 75%) !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+
+    .watch-page #idle-content {
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+
+    /* Moderner CSS-Spinner */
+    .watch-page #idle-content::before {
+      content: "";
+      width: 44px;
+      height: 44px;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top: 3px solid #3ea6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .watch-page #idle-logo {
+      font-size: clamp(28px, 5vw, 56px) !important;
+      font-weight: 700;
+      letter-spacing: .15em !important;
+      color: #fff;
+    }
+
+    .watch-page #idle-sub {
+      font-size: 13px !important;
+      letter-spacing: .15em !important;
+      color: #aaa !important;
+      text-transform: uppercase;
+    }
+
+    .watch-page #idle-arrow {
+      font-size: 12px !important;
+      color: #717171 !important;
+    }
+
+    /* --- Oberes Overlay (Zurück-Link & Titel) --- */
+    .watch-page #watch-chrome {
+      position: absolute;
+      z-index: 5;
+      inset: 0 0 auto 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 24px;
+      pointer-events: none;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+    }
+
+    .watch-page .back-link {
+      pointer-events: auto;
+      color: #f1f1f1;
+      text-decoration: none;
+      font: 500 12px "Roboto", sans-serif;
+      letter-spacing: .05em;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 8px 14px;
+      border-radius: 20px;
+      background: rgba(33, 33, 33, 0.8);
+      backdrop-filter: blur(10px);
+      transition: background 0.2s;
+    }
+
+    .watch-page .back-link:hover {
+      background: rgba(56, 56, 56, 0.9);
+    }
+
+    .watch-page .watch-wordmark {
+      font: 700 12px "Roboto", sans-serif;
+      letter-spacing: .1em;
+      color: #fff;
+    }
+
+    .watch-page .watch-wordmark span {
+      font-size: 10px;
+      color: #3ea6ff;
+      margin-left: 8px;
+      background: rgba(62, 166, 255, 0.1);
+      padding: 3px 8px;
+      border-radius: 10px;
+    }
+
+    /* --- Start-Overlay (Play-Button) --- */
+    .watch-page .start-overlay {
+      position: absolute;
+      z-index: 7;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 16px;
+      padding: 24px 32px;
+      background: rgba(20, 20, 20, 0.9);
+      color: #f1f1f1;
+      font: 500 13px "Roboto", sans-serif;
+      cursor: pointer;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(20px);
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .watch-page .start-overlay:hover {
+      background: rgba(35, 35, 35, 0.95);
+      transform: translate(-50%, -50%) scale(1.02);
+    }
+
+    .watch-page .start-icon {
+      display: grid;
+      place-items: center;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: #3ea6ff;
+      color: #0f0f0f;
+      font-size: 20px;
+      padding-left: 3px; /* Optische Zentrierung des Play-Zeichens */
+    }
+
+    .watch-page .start-overlay small {
+      font-size: 11px;
+      color: #aaa;
+    }
+
+    .watch-page .start-overlay.hidden {
+      display: none !important;
+    }
+
+    .watch-page #watch-error {
+      position: absolute;
+      z-index: 8;
+      left: 50%;
+      bottom: 30px;
+      transform: translateX(-50%);
+      max-width: 90vw;
+      color: #ff8b8b;
+      font: 12px "Roboto", sans-serif;
+      text-align: center;
+      background: rgba(20, 20, 20, 0.8);
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 0, 0, 0.2);
+    }
+
+    .watch-page #idle-overlay.hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 600px) {
+      .watch-page #watch-chrome { padding: 12px; }
+      .watch-page .watch-wordmark span { display: none; }
+      .watch-page .start-overlay { white-space: nowrap; padding: 16px 24px; }
+    }
+
+    /* Utility-Klassen für den Fall, dass die Seite im normalen Modus läuft */
+    .hidden { display: none !important; }
+  </style>
 </head>
 <body class="watch-page">
   <header id="topbar">
-    <a id="brand" href="/" aria-label="ASCILINE Startseite">ASCILINE</a>
+    <a id="brand" href="/" aria-label="Startseite">Player</a>
     <input id="query-input" type="text" aria-label="Suchbegriff" autocomplete="off">
     <button id="btn-search" class="hidden" type="button">Suchen</button>
     <button id="btn-play" class="hidden" type="button">Start</button>
@@ -39,16 +264,29 @@
   </section>
   <main id="player-container">
     <pre id="ascii-player"></pre>
-    <canvas id="ascii-canvas" aria-label="ASCILINE Bildfläche"></canvas>
-    <div id="idle-overlay"><div id="idle-content">
-      <div id="idle-logo">ASCILINE</div><div id="idle-sub">A quieter kind of screen.</div>
-      <div id="idle-arrow">Das Video wird automatisch geladen.</div>
-    </div></div>
-    <div id="watch-chrome"><a href="/" class="back-link">← Suche</a><div class="watch-wordmark">ASCILINE <span>CANVAS VIEW</span></div></div>
+    <canvas id="ascii-canvas" aria-label="Bildfläche"></canvas>
+    <div id="idle-overlay">
+      <div id="idle-content">
+        <div id="idle-logo">PLAYER</div>
+        <div id="idle-sub"></div>
+        <div id="idle-arrow">Das Video wird geladen.</div>
+      </div>
+    </div>
+    <div id="watch-chrome">
+      <a href="/" class="back-link">← Zurück</a>
+      <div class="watch-wordmark">PLAYER <span>HD</span></div>
+    </div>
     <div id="watch-error" role="status" aria-live="polite"></div>
   </main>
-  <footer id="statusbar"><span id="status-title" class="status-segment"></span><span id="status-live" class="live-badge hidden">● LIVE</span><span id="status-state" class="status-segment status-state">Bereit</span><span id="status-fps" class="status-segment status-fps"></span><span id="status-perf-hint" class="status-segment status-perf hidden"></span></footer>
+  <footer id="statusbar">
+    <span id="status-title" class="status-segment"></span>
+    <span id="status-live" class="live-badge hidden">● LIVE</span>
+    <span id="status-state" class="status-segment status-state">Bereit</span>
+    <span id="status-fps" class="status-segment status-fps"></span>
+    <span id="status-perf-hint" class="status-segment status-perf hidden"></span>
+  </footer>
   <audio id="ascii-audio" preload="auto"></audio>
   <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.4/dist/mp4box.all.min.js"></script>
   <script src="/static/app.js?v=webcodecs-canvas-1" defer></script>
-</body></html>
+</body>
+</html>
