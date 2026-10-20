@@ -143,34 +143,61 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(q: str = ""):
-    """Search YouTube videos via the server-side YouTube Data API v3."""
+async def api_search(q: str = "", search_type: str = "video", page_token: str = "", max_results: int = 24):
+    """Search YouTube videos or channels and expose YouTube's next-page token."""
     query = q.strip()
+    kind = (search_type or "video").strip().lower()
+    page_token = page_token.strip()
+    if kind not in {"video", "channel"}:
+        return JSONResponse(status_code=400, content={"error": "Ungültiger Suchtyp."})
     if not query:
         return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
-    if len(query) > 200:
-        return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
+    if len(query) > 200 or len(page_token) > 2048:
+        return JSONResponse(status_code=400, content={"error": "Suchbegriff oder Seitentoken ist ungültig."})
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
-    url = "https://www.googleapis.com/youtube/v3/search?" + params
+    per_page = max(1, min(int(max_results), 50))
+    params_dict = {"part": "snippet", "type": kind, "maxResults": per_page, "q": query,
+                   "regionCode": "DE", "relevanceLanguage": "de", "key": api_key}
+    if page_token:
+        params_dict["pageToken"] = page_token
+    url = "https://www.googleapis.com/youtube/v3/search?" + urlencode(params_dict)
     def fetch_results():
-        request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
-        with urlopen(request, timeout=12) as response:
+        request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
+        with urlopen(request, timeout=15) as response:
             return json.loads(response.read().decode("utf-8"))
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
         for item in data.get("items", []):
-            video_id = item.get("id", {}).get("videoId")
             snippet = item.get("snippet", {})
-            if not video_id:
-                continue
+            item_id = item.get("id", {})
             thumbs = snippet.get("thumbnails", {})
-            thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            results.append({"selection":_new_selection(video_id), "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
-        return {"results":results}
+            thumb = thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}
+            if kind == "channel":
+                channel_id = item_id.get("channelId")
+                if not channel_id:
+                    continue
+                results.append({"kind": "channel", "channel_id": channel_id,
+                    "title": snippet.get("title", "Unbekannter Kanal"),
+                    "channel": snippet.get("title", ""),
+                    "description": snippet.get("description", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": snippet.get("publishedAt", "")})
+            else:
+                video_id = item_id.get("videoId")
+                if not video_id:
+                    continue
+                results.append({"kind": "video", "selection": _new_selection(video_id),
+                    "title": snippet.get("title", "Unbekanntes Video"),
+                    "channel": snippet.get("channelTitle", ""),
+                    "channel_id": snippet.get("channelId", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": snippet.get("publishedAt", "")})
+        return {"results": results, "next_page_token": data.get("nextPageToken"),
+                "total_results": data.get("pageInfo", {}).get("totalResults", len(results)),
+                "search_type": kind}
     except HTTPError as exc:
         try:
             details = json.loads(exc.read().decode("utf-8"))
@@ -179,11 +206,11 @@ async def api_search(q: str = ""):
             api_message = ""
         log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
         if exc.code == 403:
-            return JSONResponse(status_code=502, content={"error":"YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
-        return JSONResponse(status_code=502, content={"error":"Fehler bei der YouTube-Suche."})
+            return JSONResponse(status_code=502, content={"error": "YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
+        return JSONResponse(status_code=502, content={"error": "Fehler bei der YouTube-Suche."})
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         log.warning("YouTube search request failed: %s", exc)
-        return JSONResponse(status_code=502, content={"error":"YouTube ist momentan nicht erreichbar."})
+        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
 
 
 @app.get("/")
