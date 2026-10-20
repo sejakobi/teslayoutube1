@@ -207,9 +207,10 @@ async def audio_stream(request: Request):
     if audio_pipeline is None:
         return Response(status_code=503, content="audio pipeline not ready")
 
+    # Als application/octet-stream getarnt, um Browser-Media-Sperren zu umgehen
     return StreamingResponse(
         audio_pipeline.chunks(),
-        media_type="audio/mpeg",
+        media_type="application/octet-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Content-Type-Options": "nosniff",
@@ -329,9 +330,11 @@ async def native_canvas_media(request: Request):
         "native Canvas stream opened session=%s format=%s separate_audio_url=%s",
         session_id, session.media.format_note, bool(session.media.audio_url),
     )
+    
+    # media_type ebenfalls auf application/octet-stream gesetzt
     return StreamingResponse(
         _native_mp4_body(proc, session, stderr_task),
-        media_type="video/mp4",
+        media_type="application/octet-stream",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate",
             "Pragma": "no-cache",
