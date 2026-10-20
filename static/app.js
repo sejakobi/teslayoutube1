@@ -1,9 +1,4 @@
-// ASCILINE YouTube streamer — Tesla browser frontend.
-//
-// Wire protocol (unchanged from vendor/asciline): text INIT message
-// "INIT:fps:mode:cols:rows:pixel" then binary frames whose first 4 bytes
-// are a big-endian frame index and whose body is mode-dependent (mode 1
-// = utf-8 text; modes 2/3 = [charCode,r,g,b] per cell).
+// ASCILINE YouTube streamer — Tesla browser frontend (Cleaned WebAudio & WebCodecs Canvas Edition).
 
 'use strict';
 
@@ -25,12 +20,13 @@ const asciiPlayer     = document.getElementById('ascii-player');
 const canvas          = document.getElementById('ascii-canvas');
 const ctx             = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const idleOverlay     = document.getElementById('idle-overlay');
-const audioEl         = document.getElementById('ascii-audio');
-const canvasSource     = null; // Canvas/WebCodecs mode deliberately has no HTMLVideoElement.
+
+// Canvas/WebCodecs mode: Kein sichtbares oder im DOM registriertes Video- oder Audioelement mehr.
 let webCodecsState = null;
 let audioContext = null;
-let audioSourceNode = null;
 let audioGainNode = null;
+let customAudioReader = null;
+let nextAudioTime = 0;
 
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
@@ -55,18 +51,13 @@ let nativeFpsCount = 0;
 let nativeFpsWindowStart = 0;
 let nativeRenderedFps = 0;
 let nativeSyncTimer = null;
-let nativeAudioSyncStartedAt = 0;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
 let wsRetryTimer     = null;
 
-// Renderer state.  Master clock is wall-clock, anchored on the first
-// server frame (audio's currentTime updates in coarse ~250 ms steps which
-// caused stall→batch-drop bursts on the M4).  A small lead lets the very
-// first frame paint immediately instead of waiting half a second.
 const frameBuffer       = [];
-const FRAME_BUFFER_MAX  = 3;       // server queue is 2; 3 keeps ~125 ms of slack
+const FRAME_BUFFER_MAX  = 3;
 const PRESENT_LEAD_MS   = 60;
 let targetFps     = 24;
 let renderMode    = 1;
@@ -82,8 +73,6 @@ let streamStartTime = 0;
 const textDecoder   = new TextDecoder();
 const CHAR_LUT      = Array.from({ length: 128 }, (_, i) => String.fromCharCode(i));
 
-// HUD: painted FPS plus worst paint-to-paint gap (JIT) and current client
-// buffer depth.  JIT exposes bursts that a 1-second average would smear.
 let frameCount       = 0;
 let measuredFps      = 0;
 let lastFpsUpdate    = 0;
@@ -121,30 +110,94 @@ function updateConfigHint() {
     }
 }
 
-// ───────── Volume / mute ─────────
+// ───────── Volume / mute (Pure WebAudio) ─────────
 let isMuted = false;
 
 volumeSlider.addEventListener('input', () => {
     const volume = parseFloat(volumeSlider.value);
     if (audioGainNode) audioGainNode.gain.value = volume;
-    else if (audioEl) audioEl.volume = volume;
-    if (canvasSource) canvasSource.volume = volume;
     isMuted = volume === 0;
-    if (canvasSource && canvasVideoMode) canvasSource.muted = true;
     updateMuteBtn();
 });
 
 btnMute.addEventListener('click', () => {
     isMuted = !isMuted;
-    if (audioEl) audioEl.muted = audioGainNode ? false : isMuted;
     if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
-    if (canvasSource) canvasSource.muted = true;
     updateMuteBtn();
 });
 
 function updateMuteBtn() {
     btnMute.textContent = isMuted ? '🔇' : '🔊';
     btnMute.classList.toggle('muted', isMuted);
+}
+
+// ───────── Unvisibles Web-Audio (Ohne <audio>-Tag) ─────────
+function stopCustomWebAudio() {
+    if (customAudioReader) {
+        try { customAudioReader.cancel(); } catch (_) {}
+        customAudioReader = null;
+    }
+    nextAudioTime = 0;
+    if (audioContext && audioContext.state !== 'closed') {
+        audioContext.suspend().catch(() => {});
+    }
+}
+
+async function startHiddenWebAudio(sid) {
+    stopCustomWebAudio();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    if (!audioContext) {
+        audioContext = new AudioCtx();
+        audioGainNode = audioContext.createGain();
+        audioGainNode.connect(audioContext.destination);
+    }
+    audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume().catch(() => {});
+    }
+
+    try {
+        const res = await fetch(`/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        customAudioReader = reader;
+        nextAudioTime = audioContext.currentTime + 0.1;
+
+        let leftover = new Uint8Array(0);
+        const MIN_CHUNK_SIZE = 24 * 1024;
+
+        while (customAudioReader === reader && appState === 'playing') {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            const merged = new Uint8Array(leftover.length + value.length);
+            merged.set(leftover, 0);
+            merged.set(value, leftover.length);
+
+            if (merged.length < MIN_CHUNK_SIZE) {
+                leftover = merged;
+                continue;
+            }
+            leftover = new Uint8Array(0);
+
+            audioContext.decodeAudioData(merged.buffer.slice(0)).then(audioBuffer => {
+                if (customAudioReader !== reader || appState === 'playing' === false) return;
+                const src = audioContext.createBufferSource();
+                src.buffer = audioBuffer;
+                src.connect(audioGainNode);
+
+                if (nextAudioTime < audioContext.currentTime) {
+                    nextAudioTime = audioContext.currentTime + 0.05;
+                }
+                src.start(nextAudioTime);
+                nextAudioTime += audioBuffer.duration;
+            }).catch(() => {});
+        }
+    } catch (e) {
+        console.warn('WebAudio Stream beendet:', e);
+    }
 }
 
 // ───────── Canvas setup ─────────
@@ -254,7 +307,6 @@ function clearFrameBuffer() {
 function renderFrame(now) {
     if (appState !== 'playing' || !readyToRender) return;
     requestAnimationFrame(renderFrame);
-
     if (frameBuffer.length === 0) return;
 
     if (!clockAnchored) {
@@ -263,8 +315,6 @@ function renderFrame(now) {
     }
     const masterClock = (now - streamStartTime) / 1000.0;
 
-    // Drop frames that fell visibly behind (>100 ms) so a tab that was
-    // backgrounded for a moment doesn't replay a backlog on resume.
     while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
         const stale = frameBuffer.shift();
         if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
@@ -287,18 +337,7 @@ function renderFrame(now) {
         lastFpsUpdate    = now;
         const jitter     = Math.round(maxPaintInterval);
         maxPaintInterval = 0;
-        statusFps.textContent =
-            `FPS ${measuredFps}/${Math.round(targetFps)}  ` +
-            `JIT ${jitter}ms  BUF ${frameBuffer.length}`;
-    }
-
-    fpsWindowFrames++;
-    if (now - fpsWindowStart >= 5000) {
-        const windowFps = fpsWindowFrames / 5;
-        fpsBelowThreshold = windowFps < targetFps * 0.70;
-        statusPerf.classList.toggle('hidden', !fpsBelowThreshold);
-        fpsWindowFrames = 0;
-        fpsWindowStart  = now;
+        statusFps.textContent = `FPS ${measuredFps}/${Math.round(targetFps)}  JIT ${jitter}ms  BUF ${frameBuffer.length}`;
     }
 
     if (canvasVideoMode) {
@@ -309,84 +348,10 @@ function renderFrame(now) {
         }
         return;
     }
-
-    if (renderMode === 1) {
-        asciiPlayer.style.display = 'block';
-        asciiPlayer.style.color   = '#fff';
-        asciiPlayer.textContent   = frame;
-        return;
-    }
-    if (pixelMode) {
-        const view = frame;
-        const data = dotImageData.data;
-        for (let src = 0, dst = 0; src < view.length; src += 3, dst += 4) {
-            data[dst]     = view[src + 2];
-            data[dst + 1] = view[src + 1];
-            data[dst + 2] = view[src];
-        }
-        ctx.putImageData(dotImageData, 0, 0);
-        return;
-    }
-
-    // Color ASCII path: per-cell fillText with a same-color run optim.
-    // Selection buffer is kept in memory every frame; the transparent <pre>'s
-    // textContent is built on demand in the selectstart/copy handlers so the
-    // paint loop never triggers a layout reflow.
-    const view   = frame;
-    const buf    = selectionBuffer;
-    const stride = gridCols + 1;
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.font         = 'bold 8px Courier New';
-    ctx.textBaseline = 'top';
-    let col = 0, row = 0, prevPacked = -1;
-    for (let idx = 0; idx < view.length; idx += 4) {
-        const ch = view[idx];
-        const r  = view[idx + 1];
-        const g  = view[idx + 2];
-        const b  = view[idx + 3];
-        const packed = (r << 16) | (g << 8) | b;
-        if (packed !== prevPacked) {
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
-            prevPacked = packed;
-        }
-        ctx.fillText(CHAR_LUT[ch], xPos[col], yPos[row]);
-        buf[row * stride + col] = ch;
-        col++;
-        if (col >= gridCols) { col = 0; row++; }
-    }
-    asciiPlayer.style.display = 'block';
-    asciiPlayer.style.color   = 'transparent';
-}
-
-// Route the separate audio stream through Web Audio when supported. The audio
-// element remains only a stream transport/decoder; Web Audio owns the output gain.
-function ensureWebAudioOutput() {
-    if (!audioEl || !window.AudioContext) return false;
-    try {
-        if (!audioContext) {
-            audioContext = new AudioContext();
-            audioSourceNode = audioContext.createMediaElementSource(audioEl);
-            audioGainNode = audioContext.createGain();
-            audioSourceNode.connect(audioGainNode);
-            audioGainNode.connect(audioContext.destination);
-            audioEl.volume = 1;
-        }
-        audioEl.muted = false;
-        audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
-        if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
-        return true;
-    } catch (error) {
-        console.warn('Web Audio output unavailable; using native audio output', error);
-        return false;
-    }
 }
 
 // ───────── WebCodecs video decoder → visible Canvas ─────────
-// The fMP4 stream is demuxed by MP4Box.js. VideoDecoder produces VideoFrames,
-// which are scheduled on the canvas against the separate audio stream's clock.
 function stopNativeCanvasSource() {
-    stopNativeAudioSync();
     const state = webCodecsState;
     webCodecsState = null;
     if (state) {
@@ -403,12 +368,6 @@ function stopNativeCanvasSource() {
             try { state.file.stop(); } catch (_) {}
         }
     }
-    nativeDrawLoopRunning = false;
-    nativeDrawRaf = null;
-    nativeVideoFrameCallback = null;
-    nativeLastMediaTime = -1;
-    nativeFpsCount = 0;
-    nativeFpsWindowStart = 0;
 }
 
 function getMp4VideoDescription(mp4File, track) {
@@ -420,7 +379,6 @@ function getMp4VideoDescription(mp4File, track) {
     if (!box || !window.MP4Box || !MP4Box.DataStream) return undefined;
     const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
     box.write(stream);
-    // WebCodecs expects the codec configuration record, without its MP4 box header.
     return new Uint8Array(stream.buffer).slice(8);
 }
 
@@ -429,17 +387,10 @@ function startWebCodecsDrawLoop(state) {
     const draw = (now) => {
         state.raf = 0;
         if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
-        // Video presentation uses its own monotonic wall clock. The separate
-        // audio element is deliberately NOT the master clock: some streamed MP3
-        // responses report currentTime=0 while still appearing to be playing,
-        // which otherwise freezes the canvas on its first frame.
         if (state.playbackStart === null && state.frames.length) {
             state.playbackStart = now - (state.frames[0].timestamp / 1000);
         }
         const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
-        // Discard only already-decoded frames that are too late, and render the
-        // newest due frame. Dropping decoded VideoFrames is safe; dropping encoded
-        // delta samples before decoding can corrupt the prediction chain.
         while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
             const older = state.frames.shift();
             try { older.close(); } catch (_) {}
@@ -454,19 +405,9 @@ function startWebCodecsDrawLoop(state) {
                 }
                 ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
                 state.drawn++;
-                state.lastPresentedTime = frame.timestamp / 1e6;
             } catch (err) {
                 console.warn('WebCodecs canvas paint failed', err);
             } finally { try { frame.close(); } catch (_) {} }
-        }
-        if (!state.fpsStart) state.fpsStart = now;
-        if (now - state.fpsStart >= 1000) {
-            const fps = Math.round(state.drawn * 1000 / Math.max(1, now - state.fpsStart));
-            statusFps.textContent = `FPS ${fps} · ${canvas.width}×${canvas.height} · WebCodecs`;
-            statusPerf.classList.toggle('hidden', fps >= 12);
-            if (fps < 12) statusPerf.textContent = 'Dekodierung kommt nicht hinterher';
-            state.drawn = 0;
-            state.fpsStart = now;
         }
         state.raf = requestAnimationFrame(draw);
     };
@@ -478,44 +419,21 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     targetFps = 30;
     buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360);
     if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window) || !window.MP4Box) {
-        setError('Dieser Browser unterstützt WebCodecs nicht vollständig. Bitte aktuelles Chrome oder Edge verwenden.');
+        setError('Browser unterstützt WebCodecs nicht.');
         return;
     }
 
     stopNativeCanvasSource();
     const state = {
         stopped: false, file: null, decoder: null, reader: null, raf: 0,
-        frames: [], clockStart: performance.now(), playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
-        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false
+        frames: [], playbackStart: null, drawn: 0, started: false,
+        track: null, timescale: 1, timestampBase: null, decoderConfigured: false
     };
     webCodecsState = state;
     setStatus('BUFFERING · WEBCODECS', 'resolving');
-    statusPerf.classList.add('hidden');
 
-    // Audio remains a separate stream, but is used as the presentation clock
-    // for the video frames so accumulated drift is minimized.
-    if (audioEl) {
-        audioEl.pause();
-        audioEl.src = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
-        audioEl.muted = isMuted;
-        audioEl.volume = audioGainNode ? 1 : parseFloat(volumeSlider.value);
-        audioEl.playbackRate = 1;
-        ensureWebAudioOutput();
-        audioEl.load();
-        // Start audio independently of the first decoded video frame. In the
-        // previous sync patch, audio.play() waited for VideoDecoder.output();
-        // if codec setup/output stalled, neither sound nor picture started.
-        const audioStartAttempt = audioEl.play();
-        if (audioStartAttempt && typeof audioStartAttempt.catch === 'function') {
-            audioStartAttempt.catch((err) => {
-                if (appState !== 'playing' || !canvasVideoMode) return;
-                statusPerf.textContent = (err && err.name === 'NotAllowedError')
-                    ? 'Tonfreigabe erforderlich – einmal auf das Bild klicken.'
-                    : `Audio konnte nicht starten: ${err && err.name || 'Fehler'}`;
-                statusPerf.classList.remove('hidden');
-            });
-        }
-    }
+    // Starte den unsichtbaren WebAudio-Stream im Hintergrund
+    startHiddenWebAudio(sid);
 
     try {
         const response = await fetch(`/media?session=${encodeURIComponent(sid)}&_=${Date.now()}`, { cache: 'no-store' });
@@ -523,12 +441,12 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
         const mp4File = MP4Box.createFile();
         state.file = mp4File;
         mp4File.onError = (message) => {
-            if (!state.stopped) setError(`MP4-Demultiplexing fehlgeschlagen: ${message}`);
+            if (!state.stopped) setError(`MP4 Fehler: ${message}`);
         };
         mp4File.onReady = (info) => {
             if (state.stopped || webCodecsState !== state) return;
             const track = (info.videoTracks || [])[0];
-            if (!track) { setError('Der Stream enthält keine unterstützte Videospur.'); return; }
+            if (!track) { setError('Keine Videospur gefunden.'); return; }
             state.track = track;
             state.timescale = track.timescale || 1;
             const description = getMp4VideoDescription(mp4File, track);
@@ -538,10 +456,9 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
                 codedHeight: track.video && track.video.height || track.track_height || fallbackHeight || 360
             };
             if (description) config.description = description;
-            const support = VideoDecoder.isConfigSupported ? VideoDecoder.isConfigSupported(config) : Promise.resolve({ supported: true, config });
-            support.then((result) => {
+            
+            VideoDecoder.isConfigSupported(config).then((result) => {
                 if (state.stopped || webCodecsState !== state) return;
-                if (!result.supported) throw new Error(`Codec nicht unterstützt: ${config.codec}`);
                 state.decoder = new VideoDecoder({
                     output(frame) {
                         if (state.stopped || webCodecsState !== state) { frame.close(); return; }
@@ -554,11 +471,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
                             state.started = true;
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             idleOverlay.classList.add('hidden');
-                            if (audioEl) audioEl.play().catch(() => {
-                                statusPerf.textContent = 'Tonfreigabe erforderlich – einmal auf das Bild klicken.';
-                                statusPerf.classList.remove('hidden');
-                            });
-                            startNativeAudioSync();
                             startWebCodecsDrawLoop(state);
                         }
                     },
@@ -570,17 +482,11 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
                 state.decoderConfigured = true;
                 mp4File.setExtractionOptions(track.id, null, { nbSamples: 120 });
                 mp4File.start();
-            }).catch((err) => {
-                if (!state.stopped) setError(`WebCodecs-Konfiguration fehlgeschlagen: ${err.message || err}`);
             });
         };
         mp4File.onSamples = (trackId, user, samples) => {
             if (state.stopped || !state.decoderConfigured || !state.decoder) return;
             for (const sample of samples) {
-                // Do not discard arbitrary delta frames when the decoder is busy:
-                // losing one can corrupt the GOP and leave the canvas frozen until
-                // the next keyframe. Normalize timestamps to the first sample so
-                // they share the same zero-based clock as audio.currentTime.
                 if (state.timestampBase === null) state.timestampBase = sample.cts;
                 const timestamp = Math.round((sample.cts - state.timestampBase) * 1e6 / state.timescale);
                 try {
@@ -590,10 +496,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
                         duration: Math.max(1, Math.round(sample.duration * 1e6 / state.timescale)),
                         data: sample.data
                     }));
-                    state.sampleCount++;
-                } catch (err) {
-                    console.warn('Video sample decode failed', err);
-                }
+                } catch (err) {}
             }
         };
         state.reader = response.body.getReader();
@@ -606,83 +509,18 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
             fileStart += buffer.byteLength;
             mp4File.appendBuffer(buffer);
         }
-        if (!state.stopped && state.decoder) {
-            try { await state.decoder.flush(); } catch (_) {}
-            setStatus('STREAM ENDE', 'idle');
-        }
     } catch (err) {
-        if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
+        if (!state.stopped) setError(`WebCodecs Fehler: ${err.message || err}`);
     }
 }
 
-function startNativeAudioSync() {
-    stopNativeAudioSync();
-    if (!audioEl) return;
-    nativeSyncTimer = setInterval(() => {
-        const state = webCodecsState;
-        if (appState !== 'playing' || !canvasVideoMode || !state || state.stopped || !audioEl) {
-            stopNativeAudioSync(); return;
-        }
-        if (audioEl.paused || !Number.isFinite(audioEl.currentTime) || !state.started) return;
-        const videoTime = state.lastPresentedTime;
-        const delta = audioEl.currentTime - videoTime;
-        if (Math.abs(delta) < 0.08) audioEl.playbackRate = 1;
-        else audioEl.playbackRate = Math.max(0.96, Math.min(1.04, 1 - Math.max(-0.04, Math.min(0.04, delta * 0.08))));
-    }, 500);
-}
-
-function stopNativeAudioSync() {
-    if (nativeSyncTimer !== null) { clearInterval(nativeSyncTimer); nativeSyncTimer = null; }
-    if (audioEl) audioEl.playbackRate = 1;
-}
-
-function resumeNativeCanvasAudioFromGesture() {
-    if (!canvasVideoMode || !audioEl || !audioEl.paused || appState !== 'playing') return;
-    audioEl.play().then(() => {
-        if (webCodecsState && webCodecsState.started) startNativeAudioSync();
-        statusPerf.classList.add('hidden');
-    }).catch((err) => {
-        statusPerf.textContent = `Audio konnte nicht starten: ${err && err.name || 'Fehler'}`;
-        statusPerf.classList.remove('hidden');
-    });
-}
-canvas.addEventListener('click', resumeNativeCanvasAudioFromGesture);
-// The idle overlay covers the canvas while loading, so it must also forward
-// the user gesture needed by browsers that block autoplay.
-idleOverlay.addEventListener('click', resumeNativeCanvasAudioFromGesture);
-
-function startRenderingAndAudio(sid) {
-    if (audioEl) {
-        audioEl.pause();
-        audioEl.src = `/audio?session=${encodeURIComponent(sid)}&_=${Date.now()}`;
-        audioEl.muted = isMuted;
-        audioEl.volume = parseFloat(volumeSlider.value);
-        audioEl.load();
-        audioEl.play().catch((err) => {
-            statusPerf.textContent = `audio: ${err && err.name || 'error'}`;
-            statusPerf.classList.remove('hidden');
-        });
-    }
-    readyToRender = true;
-    lastFpsUpdate = performance.now();
-    fpsWindowStart = lastFpsUpdate;
-    requestAnimationFrame(renderFrame);
-}
-
-// ───────── WebSocket ─────────
+// ───────── WebSocket (ASCII Mode) ─────────
 function connectWs(sid) {
     clearFrameBuffer();
     canvasVideoMode = false;
-    lastCanvasFrameIndex = -1;
-    frameCount         = 0;
-    measuredFps        = 0;
-    fpsWindowFrames    = 0;
-    fpsWindowStart     = 0;
-    fpsBelowThreshold  = false;
-    readyToRender      = false;
-    clockAnchored      = false;
-    lastPaintTime      = 0;
-    maxPaintInterval   = 0;
+    readyToRender = false;
+    
+    startHiddenWebAudio(sid);
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
@@ -697,97 +535,25 @@ function connectWs(sid) {
                 closeWs();
                 return;
             }
-            if (event.data.startsWith('CANVAS_INIT:')) {
+            if (event.data.startsWith('CANVAS_INIT:') || event.data.startsWith('INIT:')) {
                 wsRetryCount = 0;
                 const p = event.data.split(':');
                 targetFps = parseFloat(p[1]);
-                const width = parseInt(p[2], 10);
-                const height = parseInt(p[3], 10);
-                renderMode = 0;
-                pixelMode = false;
-                buildVideoCanvas(width, height);
-
-                setStatus('PLAYING · CANVAS', 'playing');
+                if (event.data.startsWith('CANVAS_INIT:')) {
+                    buildVideoCanvas(parseInt(p[2], 10), parseInt(p[3], 10));
+                } else {
+                    renderMode = parseInt(p[2]);
+                    pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
+                    buildCanvas(parseInt(p[3]), parseInt(p[4]));
+                }
+                setStatus('PLAYING', 'playing');
                 idleOverlay.classList.add('hidden');
-                startRenderingAndAudio(sid);
-                return;
-            } else if (event.data.startsWith('INIT:')) {
-                wsRetryCount = 0;
-                const p = event.data.split(':');
-                targetFps  = parseFloat(p[1]);
-                renderMode = parseInt(p[2]);
-                pixelMode  = (p.length > 5 && parseInt(p[5]) === 1);
-                canvasVideoMode = false;
-                buildCanvas(parseInt(p[3]), parseInt(p[4]));
-
-                setStatus('PLAYING · ASCII', 'playing');
-                idleOverlay.classList.add('hidden');
-
-                startRenderingAndAudio(sid);
+                readyToRender = true;
+                requestAnimationFrame(renderFrame);
                 return;
             }
-            // Mode-1 text frame: "<idx>\n<frame text>".
-            const nl  = event.data.indexOf('\n');
-            const idx = parseInt(event.data.substring(0, nl));
-            frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
-        } else {
-            const view = new DataView(event.data);
-            const idx  = view.getUint32(0, false);
-            if (canvasVideoMode) {
-                if (idx <= lastCanvasFrameIndex) return;
-                const jpeg = event.data.slice(4);
-                createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' })).then(bitmap => {
-                    if (appState !== 'playing' || !canvasVideoMode || idx <= lastCanvasFrameIndex) {
-                        bitmap.close();
-                        return;
-                    }
-                    // Canvas frames can pause when the CDN/FFmpeg pipe stalls.
-                    // Timestamp on arrival, not idx/FPS: a wall clock based on
-                    // frame indexes drifts during stalls and delays recovery.
-                    frameBuffer.push({ data: bitmap, time: performance.now() / 1000, index: idx });
-                    frameBuffer.sort((a, b) => a.index - b.index);
-                    while (frameBuffer.length > FRAME_BUFFER_MAX) {
-                        const dropped = frameBuffer.shift();
-                        if (dropped && dropped.data instanceof ImageBitmap) dropped.data.close();
-                    }
-                }).catch(err => {
-                    console.warn('Canvas frame decode failed:', err);
-                });
-                return;
-            }
-            frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
-        }
-        while (frameBuffer.length > FRAME_BUFFER_MAX) {
-            const dropped = frameBuffer.shift();
-            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
         }
     };
-
-    ws.onclose = (evt) => {
-        // 1000 = normal close from our own stop/replace; 4003 = auth rejected.
-        if (appState !== 'playing' || evt.code === 1000 || evt.code === 4003) {
-            if (appState === 'playing') {
-                setStatus('ENDED', 'idle');
-                finishPlayback();
-            }
-            return;
-        }
-
-        wsRetryCount++;
-        if (wsRetryCount > WS_MAX_RETRIES) {
-            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
-            finishPlayback();
-            return;
-        }
-        const delay = wsRetryCount * 1000;
-        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
-        wsRetryTimer = setTimeout(() => {
-            wsRetryTimer = null;
-            if (appState === 'playing' && sessionId === sid) connectWs(sid);
-        }, delay);
-    };
-
-    ws.onerror = () => { /* onclose drives reconnect */ };
 }
 
 // ───────── Control API ─────────
@@ -797,23 +563,16 @@ async function doPlay() {
     const query = queryInput.value.trim();
     if (!selection && !query) { if (queryInput) queryInput.focus(); return; }
 
-    presetHint.classList.add('hidden');
+    stopCustomWebAudio();
     stopPoll();
     closeWs();
-    if (audioEl) { audioEl.pause(); audioEl.removeAttribute('src'); audioEl.load(); }
     clearCanvas();
-
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
 
     appState      = 'resolving';
     currentPreset = selectedPreset;
     setUiState('resolving');
     setStatus('RESOLVING…', 'resolving');
     statusTitle.textContent = selection ? 'ASCILINE' : query;
-    statusLive.classList.add('hidden');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
 
     let resp, data;
     try {
@@ -824,17 +583,17 @@ async function doPlay() {
         });
         data = await resp.json();
     } catch (err) {
-        setError('Network error — ' + err.message);
+        setError('Netzwerkfehler — ' + err.message);
         setUiState('idle');
         return;
     }
     if (!resp.ok) {
-        setError(data.error || `Server error ${resp.status}`);
+        setError(data.error || `Serverfehler ${resp.status}`);
         setUiState('idle');
         return;
     }
 
-  sessionId = data.session_id;
+    sessionId = data.session_id;
     appState  = 'playing';
     setUiState('playing');
     updateTitle(data.title, data.is_live);
@@ -849,19 +608,15 @@ async function doPlay() {
 }
 
 async function doStop() {
+    stopCustomWebAudio();
     stopPoll();
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
     try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
     closeWs();
     finishPlayback();
     setStatus('IDLE', 'idle');
     statusTitle.textContent = '';
-    statusLive.classList.add('hidden');
-    presetHint.classList.add('hidden');
 }
 
-// ───────── Status polling ─────────
 function startPoll() {
     stopPoll();
     pollTimer = setInterval(async () => {
@@ -873,7 +628,7 @@ function startPoll() {
         } catch (_) { return; }
         if (data.title) updateTitle(data.title, data.is_live);
         if (data.state === 'error') {
-            setError(data.error || 'Stream error');
+            setError(data.error || 'Stream-Fehler');
             closeWs();
             finishPlayback();
             stopPoll();
@@ -885,7 +640,6 @@ function stopPoll() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
-// ───────── UI helpers ─────────
 function setUiState(state) {
     btnPlay.disabled = false;
     btnStop.disabled = !(state === 'resolving' || state === 'playing');
@@ -901,9 +655,6 @@ function setError(msg) {
     appState = 'error';
     statusTitle.textContent = '⚠ ' + msg;
     setStatus('ERROR', 'error');
-    statusLive.classList.add('hidden');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
     setUiState('idle');
     idleOverlay.classList.remove('hidden');
 }
@@ -914,21 +665,17 @@ function updateTitle(title, isLive) {
 }
 
 function finishPlayback() {
+    stopCustomWebAudio();
     appState           = 'idle';
     readyToRender      = false;
     clearFrameBuffer();
-    if (audioEl) { audioEl.pause(); audioEl.src = ''; }
     stopNativeCanvasSource();
     clearCanvas();
     idleOverlay.classList.remove('hidden');
     setUiState('idle');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
-    fpsBelowThreshold = false;
 }
 
 function clearCanvas() {
-    // Also stop an active native media request before a new Play/Stop.
     stopNativeCanvasSource();
     canvasVideoMode = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -945,19 +692,7 @@ function closeWs() {
     ws = null;
 }
 
-// ───────── Selection / copy ─────────
-// The transparent <pre> exists so users can drag-select and copy the ASCII
-// frame.  Materializing its textContent on every paint forces a layout
-// reflow per frame; instead, we materialize only when the user actually
-// starts a selection or fires a copy.
-const flushSelectionLayer = () => {
-    if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
-    asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
-};
-asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
-document.addEventListener('copy', flushSelectionLayer);
-
-// ───────── YouTube Data API search ─────────
+// ───────── YouTube Suche ─────────
 let searchRequestId = 0;
 
 async function doSearch() {
@@ -972,61 +707,43 @@ async function doSearch() {
         const response = await fetch('/api/search?q=' + encodeURIComponent(query));
         const data = await response.json();
         if (requestId !== searchRequestId) return;
-        if (!response.ok) {
-            if (response.status === 403) throw new Error('Bitte zuerst mit deiner PIN anmelden und erneut suchen.');
-            throw new Error(data.error || `Suche fehlgeschlagen (${response.status}).`);
-        }
+        if (!response.ok) throw new Error(data.error || `Suche fehlgeschlagen (${response.status}).`);
         const results = data.results || [];
         if (!results.length) { searchMessage.textContent = 'Keine Videos gefunden.'; return; }
-        searchMessage.textContent = `${results.length} Ergebnisse – wähle ein Video aus`;
+        searchMessage.textContent = `${results.length} Ergebnisse`;
         for (const video of results) {
             const card = document.createElement('button');
             card.type = 'button'; card.className = 'search-result';
-            card.setAttribute('aria-label', `Abspielen: ${video.title}`);
             const image = document.createElement('img');
             image.className = 'search-thumbnail'; image.alt = ''; image.loading = 'lazy';
             image.src = video.thumbnail || ''; image.hidden = !video.thumbnail;
             const details = document.createElement('span'); details.className = 'search-details';
             const title = document.createElement('span'); title.className = 'search-title'; title.textContent = video.title;
-            const channel = document.createElement('span'); channel.className = 'search-channel'; channel.textContent = video.channel || 'Unbekannter Kanal';
+            const channel = document.createElement('span'); channel.className = 'search-channel'; channel.textContent = video.channel || '';
             details.append(title, channel); card.append(image, details);
             card.addEventListener('click', () => { location.href = '/watch?selection=' + encodeURIComponent(video.selection); });
             searchResults.append(card);
         }
     } catch (error) {
-        if (requestId === searchRequestId) searchMessage.textContent = error.message || 'Die Suche ist fehlgeschlagen.';
+        if (requestId === searchRequestId) searchMessage.textContent = error.message || 'Suche fehlgeschlagen.';
     } finally { if (requestId === searchRequestId) btnSearch.disabled = false; }
 }
 
-// ───────── Wiring ─────────
 btnPlay.addEventListener('click', doPlay);
 btnSearch.addEventListener('click', doSearch);
 if (btnCloseSearch) btnCloseSearch.addEventListener('click', () => searchPanel.classList.add('hidden'));
 btnStop.addEventListener('click', doStop);
 queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
-window.addEventListener('resize', () => {
-    if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
-    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
-});
-
-
-// Split-page mode: search lives on /; /watch starts the selected video automatically.
 if (location.pathname === '/watch') {
   document.body.classList.add('watch-page');
   const params = new URLSearchParams(location.search);
   const selection = params.get('selection');
-  const start = document.getElementById('watch-start');
-  if (start) start.remove(); // Remove the overlay that blocked interaction on some layouts.
   if (btnPlay) btnPlay.classList.add('hidden');
   if (btnSearch) btnSearch.classList.add('hidden');
   if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
   if (btnStop) { btnStop.classList.remove('hidden'); btnStop.addEventListener('click', () => { location.href = '/'; }); }
   if (selection) {
-    // Start automatically after control wiring has completed.
     window.setTimeout(() => { void doPlay(); }, 0);
-  } else {
-    const arrow = document.getElementById('idle-arrow');
-    if (arrow) arrow.textContent = 'Kein Video ausgewählt – bitte zur Suche zurückkehren.';
   }
 }
