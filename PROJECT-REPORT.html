@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASCILINE YouTube Streamer — Project Report</title>
+<style>
+  :root {
+    --bg:       #0a0a0a;
+    --surface:  #111111;
+    --border:   #2a2a2a;
+    --amber:    #F5A623;
+    --amber-dim:#b07518;
+    --text:     #e0e0e0;
+    --muted:    #888888;
+    --green:    #4ec94e;
+    --red:      #e05555;
+    --mono:     'Courier New', Courier, monospace;
+    --sans:     Georgia, 'Times New Roman', serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.7;
+    padding: 2rem 1rem 4rem;
+  }
+  .page { max-width: 900px; margin: 0 auto; }
+  header { border-bottom: 2px solid var(--amber); padding-bottom: 1.5rem; margin-bottom: 2.5rem; }
+  header h1 { font-size: 2rem; color: var(--amber); font-family: var(--mono); letter-spacing: 0.05em; text-transform: uppercase; }
+  header .subtitle { color: var(--muted); font-size: 0.95rem; font-family: var(--mono); margin-top: 0.4rem; }
+  section { margin-bottom: 3rem; }
+  h2 { font-size: 1.2rem; color: var(--amber); font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.08em; border-left: 3px solid var(--amber); padding-left: 0.75rem; margin-bottom: 1.25rem; }
+  h3 { font-size: 1rem; color: var(--amber-dim); font-family: var(--mono); margin: 1.25rem 0 0.5rem; }
+  p { margin-bottom: 0.9rem; }
+  ul, ol { margin: 0 0 0.9rem 1.5rem; }
+  li { margin-bottom: 0.4rem; }
+  code { font-family: var(--mono); color: var(--amber); background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 2px; font-size: 0.9em; }
+  pre { font-family: var(--mono); background: var(--surface); border: 1px solid var(--border); padding: 0.8rem 1rem; border-radius: 3px; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.9rem; color: var(--text); }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--amber); font-family: var(--mono); font-weight: normal; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.78rem; }
+  tr:hover td { background: rgba(245,166,35,0.04); }
+  .muted { color: var(--muted); }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  footer { border-top: 1px solid var(--border); padding-top: 1.5rem; margin-top: 3rem; color: var(--muted); font-size: 0.85rem; font-family: var(--mono); text-align: center; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>ASCILINE YouTube Streamer</h1>
+  <div class="subtitle">Project report — shipped state</div>
+</header>
+
+<section>
+  <h2>Goal</h2>
+  <p>Self-hosted service running on a Mac mini that plays any YouTube video — live or VOD — as a real-time ASCII video stream in a web browser.  Primary client: the in-car Tesla browser (Chromium, modest Canvas budget).</p>
+  <p>The user types a YouTube URL, an 11-character video ID, or a free-text search query and hits <strong>Play</strong>.  Audio plays alongside the ASCII video.  A 4–8 digit PIN gates access; the page is exposed to the internet through Cloudflare.</p>
+</section>
+
+<section>
+  <h2>Architecture</h2>
+  <pre>Browser                        Mac mini
+─────────                     ────────────────────────────────────────
+GET  /                   ──▶  static/index.html  (or pin.html if no cookie)
+POST /api/auth           ──▶  HMAC cookie issued (Secure only on https)
+POST /api/play           ──▶  resolver.py (yt-dlp) → ResolvedMedia
+                              pipeline.py spawns ffmpeg ×2 (video + audio)
+WS   /ws/video           ◀──  INIT message + binary ASCILINE frames
+GET  /audio              ◀──  AAC/ADTS chunked stream</pre>
+
+  <h3>Components</h3>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td><code>server.py</code></td><td>FastAPI app, routes, auth middleware</td></tr>
+    <tr><td><code>auth.py</code></td><td>HMAC cookie, brute-force lockout, PIN check</td></tr>
+    <tr><td><code>session.py</code></td><td>Single-active-session state machine</td></tr>
+    <tr><td><code>resolver.py</code></td><td>yt-dlp wrapper: ID/URL/search → media URLs + metadata</td></tr>
+    <tr><td><code>pipeline.py</code></td><td>ffmpeg subprocesses (video rawvideo + audio AAC), encoder, async iterator</td></tr>
+    <tr><td><code>config.py</code></td><td>Quality presets, server defaults</td></tr>
+    <tr><td><code>static/</code></td><td>Frontend (index.html, app.js, style.css, pin.html)</td></tr>
+    <tr><td><code>vendor/asciline/</code></td><td>Vendored ASCILINE encoder + protocol notes (MIT)</td></tr>
+  </table>
+
+  <h3>Pipeline pacing</h3>
+  <p>ffmpeg is invoked with <code>-re -fps_mode cfr -r &lt;target_fps&gt;</code>.  <code>-re</code> makes the input read at native realtime rate; <code>-fps_mode cfr -r N</code> resamples the output to a constant N fps.  Frames arrive on the consumer side evenly paced — no consumer-side pacing is needed.  The async <code>frames()</code> iterator is a trivial drain: read from the queue, encode, send.</p>
+
+  <h3>Wire protocol</h3>
+  <p>Vendored unchanged from ASCILINE.  Plain-text INIT message (<code>INIT:fps:mode:cols:rows:pixel</code>) followed by binary frames.  Each frame begins with a 4-byte big-endian frame index; the body is mode-dependent (mode 1 = utf-8 text; modes 2/3 = <code>[charCode, r, g, b]</code> per cell).  See <code>vendor/asciline/PROTOCOL-NOTES.md</code>.</p>
+</section>
+
+<section>
+  <h2>Quality presets</h2>
+  <table>
+    <tr><th>Preset</th><th>Grid</th><th>FPS</th><th>Color mode</th><th>Verified</th></tr>
+    <tr><td>LOW (default)</td><td>120 × 50</td><td>24</td><td>2 (512 colors)</td><td class="green">FPS 24/24 JIT ~42 ms (M4)</td></tr>
+    <tr><td>MED</td><td>160 × 68</td><td>30</td><td>3 (32K colors)</td><td>Paint-bound on M4</td></tr>
+    <tr><td>HIGH</td><td>200 × 84</td><td>30</td><td>3 (32K colors)</td><td>Paint-bound on M4</td></tr>
+  </table>
+  <p>LOW is the preset used in the Tesla.  MED/HIGH render correctly but the per-cell <code>fillText</code> color path on Chromium caps at ~150–300 K calls/s, which is at the wall for MED and over it for HIGH.</p>
+</section>
+
+<section>
+  <h2>Auth</h2>
+  <ul>
+    <li>Required at startup: <code>--pin &lt;4-8 digits&gt;</code> or <code>ASCIILINE_PIN</code> env.</li>
+    <li>HMAC-signed cookie (<code>itsdangerous.TimestampSigner</code>); secret persisted to <code>.secret</code> across restarts; 30-day expiry.</li>
+    <li>Per-IP lockout: 5 failures → 10-minute lockout; <code>CF-Connecting-IP</code> used behind Cloudflare so each car/device is locked out independently.</li>
+    <li>Cookie is marked <code>Secure</code> only when the auth request itself came in over https.  Over plain http (local dev) the cookie omits <code>Secure</code> so the browser actually sends it on the <code>/audio</code> GET; otherwise audio would silently 403 while video kept working.</li>
+    <li>Middleware on every route.  WebSocket upgrades close with code 4003.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Process lifecycle</h2>
+  <ul>
+    <li>Single-active-session state machine: <code>idle | resolving | playing | error</code>.</li>
+    <li>A new <code>POST /api/play</code> kills the previous session: SIGTERM to both ffmpegs in parallel, SIGKILL after 3 s.</li>
+    <li>Pipeline teardown is dispatched as a background task so <code>play()</code> returns immediately.</li>
+    <li><code>atexit</code> + SIGINT/SIGTERM handlers; on shutdown both pipelines are torn down synchronously and no orphan ffmpeg survives.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Performance findings</h2>
+  <p>The renderer perf pass that closed the project exposed three things that contradicted the original guesses:</p>
+  <ol>
+    <li><strong>Per-cell <code>fillText</code> is NOT the bottleneck at LOW.</strong>  Diagnostic measurement on the M4 showed the color render loop at 4.9–7.3 ms per frame (≈140 fps of headroom).  The earlier "13/24" figure was the server's irregular delivery, not paint cost.  A glyph atlas was tried; it regressed performance because mode-3 (32K colors) thrashes any reasonably-sized LRU.  The atlas was reverted.  <strong>Do not re-add a glyph atlas.</strong>  If MED/HIGH smoothness ever matters, the known fix is an <code>ImageData</code>/<code>putImageData</code> pixel renderer (the <code>pixelMode</code> path already uses this approach).</li>
+    <li><strong>Audio failure was the cookie's <code>Secure</code> flag.</strong>  Over plain <code>http://localhost</code> the browser refuses to send Secure cookies, so the <code>/audio</code> GET arrived without auth and got 403'd, while the WebSocket worked because of its different upgrade handshake.  Fix: only set <code>Secure</code> when the auth request itself came in over https.</li>
+    <li><strong>Video stutter was a bursty ffmpeg producer fighting consumer-side pacing.</strong>  Five iterations of consumer pacing (relative sleep, absolute target, skip-ahead, re-anchor, latest-frame-pick) all failed the same way.  The fix was source-side pacing: <code>-re -fps_mode cfr -r N</code> on ffmpeg makes frames arrive evenly paced; the consumer becomes a trivial drain.</li>
+  </ol>
+  <p>All numbers are from the M4 reference (Mac mini Apple Silicon, server + browser on the same machine).  The Tesla in-car browser (Ryzen MCU, Chromium) is the deployment target but is currently untested in this build.</p>
+</section>
+
+<section>
+  <h2>Run</h2>
+  <pre>brew install ffmpeg
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python server.py --pin 1234</pre>
+  <p>Or run <code>./run.sh</code> idempotently — it does the same setup, prompts for a PIN, and starts the server.</p>
+  <p>Open <code>http://&lt;host&gt;:8000/</code>, enter the PIN, type a video ID / URL / search, hit Play.</p>
+</section>
+
+<section>
+  <h2>Known limitations</h2>
+  <ul>
+    <li><strong>A/V drift on long VODs.</strong>  Two independent ffmpeg processes; no shared clock.  Audible drift after 20–40 minutes on long VODs; negligible on live.</li>
+    <li><strong>~6-hour stream URL expiry.</strong>  YouTube googlevideo.com URLs carry time-limited signatures.  Live sessions left running past ~6 h stop on manifest expiry.  Press Play again to re-resolve.</li>
+    <li><strong>In-memory PIN lockout</strong> — resets on restart.</li>
+    <li><strong>No seeking, pause, resume.</strong>  Stop and re-Play restarts.</li>
+    <li><strong>Single active session.</strong>  A new Play kills the previous.</li>
+    <li><strong>Paint ceiling at MED/HIGH on M4.</strong>  Documented above.</li>
+    <li><strong>Tesla in-car untested</strong> in this build.</li>
+  </ul>
+</section>
+
+<footer>
+  ASCILINE YouTube Streamer — vendored from
+  <a href="https://github.com/YusufB5/ASCILINE" style="color: var(--amber);">github.com/YusufB5/ASCILINE</a>
+  (MIT, anti-advertisement clause)
+</footer>
+
+</div>
+</body>
+</html>
