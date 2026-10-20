@@ -456,3 +456,32 @@ footer b {
     text-align: center;
   }
 }
+
+/* Spezielles Design für Kanal-Suchergebnisse */
+.result.channel-card {
+  align-items: center;
+  text-align: center;
+  background: var(--panel, #1f1f1f);
+  padding: 20px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line, rgba(255,255,255,0.1));
+}
+
+.result.channel-card .thumb-wrap {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+}
+
+.result.channel-card .result-title {
+  font-weight: 600;
+  text-align: center;
+}
+
+.result.channel-card .result-channel {
+  justify-content: center;
+  color: var(--accent, #ff0000);
+}
