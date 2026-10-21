@@ -3,20 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f5f5f7">
-  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#101214">
   <title>ASCILINE Media Hub</title>
-  <link rel="stylesheet" href="/static/style.css?v=webcodecs-canvas-1">
-  <link rel="stylesheet" href="/static/watch.css?v=asciline-media-hub-1">
+  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/watch.css?v=2">
 </head>
 <body class="watch-page">
   <header id="topbar">
     <a id="brand" href="/" aria-label="ASCILINE Startseite">ASCILINE</a>
-    <input id="query-input" type="text" aria-label="Suchbegriff" autocomplete="off">
-    <button id="btn-search" class="hidden" type="button">Suchen</button>
-    <button id="btn-play" class="hidden" type="button">Start</button>
-    <button id="btn-stop" class="hidden" type="button">← Mediathek</button>
+    <input id="query-input" type="text" autocomplete="off" class="hidden">
+    <button id="btn-stop" class="btn btn-secondary" type="button">← Zurück zur Suche</button>
   </header>
+  
   <div id="subbar">
     <div id="preset-group" role="group" aria-label="Qualität">
       <button class="preset-btn active" data-preset="low" type="button">Low</button>
@@ -29,26 +27,49 @@
     </div>
     <div id="preset-hint" class="hidden"></div>
     <div id="volume-group">
-      <button id="btn-mute" type="button" aria-label="Ton umschalten">◖</button>
+      <button id="btn-mute" type="button" aria-label="Ton umschalten">🔊</button>
       <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Lautstärke">
     </div>
   </div>
-  <section id="search-panel" class="hidden">
-    <div id="search-message"></div><div id="search-results"></div>
-    <button id="btn-close-search" type="button" aria-label="Suche schließen">Schließen</button>
-  </section>
+
   <main id="player-container">
     <pre id="ascii-player"></pre>
     <canvas id="ascii-canvas" aria-label="ASCILINE Bildfläche"></canvas>
+    
+    <!-- Creator Banner oben im Player -->
+    <div id="creator-channel-bar" class="creator-bar hidden">
+      <div class="creator-info">
+        <span id="creator-channel-title" class="creator-name">Kanal</span>
+        <span id="creator-channel-subtitle" class="creator-sub">Creator-Kanal</span>
+      </div>
+      <button id="btn-view-channel-videos" class="btn btn-primary btn-sm" type="button">Kanal-Videos</button>
+    </div>
+
+    <!-- Versteckte Steuerelemente für Play/Pause und Fortschritt -->
+    <div id="playback-controls" class="playback-dock hidden">
+      <button id="btn-pause" class="dock-btn" type="button" aria-label="Pause">Ⅱ</button>
+      <span id="playback-current-time" class="dock-time">0:00</span>
+      <input id="playback-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="Fortschritt">
+      <span id="playback-duration" class="dock-time">0:00</span>
+      <span id="playback-live" class="live-badge hidden">LIVE</span>
+    </div>
+
     <div id="idle-overlay"><div id="idle-content">
-      <div id="idle-logo">ASCILINE</div><div id="idle-sub">ASCILINE MEDIA HUB</div>
-      <div id="idle-arrow">Die ausgewählte Wiedergabe wird vorbereitet.</div>
+      <div id="idle-logo">ASCILINE</div>
+      <div id="idle-sub">SICHERER MEDIA HUB</div>
+      <div id="idle-arrow">Die Wiedergabe wird vorbereitet …</div>
     </div></div>
-    <div id="watch-chrome"><a href="/" class="back-link">← Suche</a><div class="watch-wordmark">ASCILINE <span>CANVAS VIEW</span></div></div>
-    <div id="watch-error" role="status" aria-live="polite"></div>
   </main>
-  <footer id="statusbar"><span id="status-title" class="status-segment"></span><span id="status-live" class="live-badge hidden">● LIVE</span><span id="status-state" class="status-segment status-state">Bereit</span><span id="status-fps" class="status-segment status-fps"></span><span id="status-perf-hint" class="status-segment status-perf hidden"></span></footer>
-  <audio id="ascii-audio" preload="auto"></audio>
+
+  <footer id="statusbar">
+    <span id="status-title" class="status-segment"></span>
+    <span id="status-live" class="live-badge hidden">● LIVE</span>
+    <span id="status-state" class="status-segment status-state">Bereit</span>
+    <span id="status-fps" class="status-segment status-fps"></span>
+    <span id="status-perf-hint" class="status-segment status-perf hidden"></span>
+  </footer>
+
   <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.4/dist/mp4box.all.min.js"></script>
-  <script src="/static/app.js?v=asciline-audio-clock-sync-2" defer></script>
-</body></html>
+  <script src="/static/app.js?v=2" defer></script>
+</body>
+</html>
