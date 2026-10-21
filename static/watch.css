@@ -1,5 +1,4 @@
-/* ASCILINE Media Hub — independent TeslaPlay-inspired visual refresh.
-   Presentation only: the existing Canvas/WebCodecs/audio implementation is unchanged. */
+/* ASCILINE Media Hub — TeslaPlay-inspired visual refresh with custom Canvas transport controls. */
 :root {
   --ui-bg: #101214;
   --ui-panel: #171a1d;
@@ -42,7 +41,7 @@
   align-items: center !important;
   gap: 14px !important;
   min-width: 0 !important;
-  min-height: 66px !important;
+  min-height: 62px !important;
   padding: 10px clamp(14px, 2.4vw, 34px) !important;
   background: rgba(19,22,24,.96) !important;
   border: 0 !important;
@@ -120,10 +119,10 @@
   align-items: center !important;
   justify-content: space-between !important;
   flex-wrap: wrap !important;
-  gap: 11px 18px !important;
+  gap: 10px 16px !important;
   min-width: 0 !important;
-  min-height: 59px !important;
-  padding: 9px clamp(14px, 2.4vw, 34px) !important;
+  min-height: 58px !important;
+  padding: 8px clamp(14px, 2.4vw, 34px) !important;
   border: 0 !important;
   border-bottom: 1px solid var(--ui-border) !important;
   background: #131618 !important;
@@ -174,8 +173,50 @@
   color: #ff979b !important;
   box-shadow: inset 0 0 0 1px rgba(228,74,79,.035) !important;
 }
+
+/* Custom Canvas Playback Controls (Play/Pause + Timeline) */
+.watch-page .playback-controls {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  flex: 1 1 280px !important;
+  max-width: 520px !important;
+  padding: 4px 12px !important;
+  border-radius: 999px !important;
+  background: rgba(255,255,255,.04) !important;
+  border: 1px solid var(--ui-border) !important;
+}
+.watch-page #btn-pause {
+  display: inline-grid !important;
+  place-items: center !important;
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 50% !important;
+  border: 0 !important;
+  background: var(--ui-accent) !important;
+  color: #fff !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  cursor: pointer !important;
+  flex: 0 0 auto !important;
+  transition: transform .15s ease, opacity .15s ease !important;
+}
+.watch-page #btn-pause:hover { opacity: .9; transform: scale(1.04); }
+.watch-page .playback-time {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  color: #cdd3d8 !important;
+  min-width: 38px !important;
+  text-align: center !important;
+}
+.watch-page #playback-progress {
+  flex: 1 1 auto !important;
+  height: 18px !important;
+  accent-color: var(--ui-accent) !important;
+  cursor: pointer !important;
+}
+
 .watch-page #preset-hint {
-  order: 4 !important;
+  order: 5 !important;
   flex-basis: 100% !important;
   margin: 0 !important;
   color: #ffb0b3 !important;
@@ -218,141 +259,6 @@
   background: #030405 !important;
   box-shadow: 0 14px 40px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025) !important;
 }
-
-/* ───────── NEU: Creator Channel Bar (Top Left) ───────── */
-.watch-page #creator-channel-bar {
-  position: absolute !important;
-  top: 16px !important;
-  left: 16px !important;
-  z-index: 10 !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 14px !important;
-  background: rgba(19, 22, 24, 0.85) !important;
-  padding: 8px 16px !important;
-  border-radius: 20px !important;
-  border: 1px solid var(--ui-border) !important;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.3) !important;
-  transition: opacity 0.3s ease, transform 0.3s ease !important;
-}
-.watch-page #creator-channel-bar.hidden {
-  display: none !important;
-}
-.watch-page .creator-info {
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 2px !important;
-}
-.watch-page .creator-name {
-  font-size: 13px !important;
-  font-weight: 650 !important;
-  color: var(--ui-text) !important;
-  display: block !important;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.5) !important;
-}
-.watch-page .creator-sub {
-  font-size: 10px !important;
-  color: var(--ui-muted) !important;
-  display: block !important;
-}
-.watch-page .btn-sm {
-  padding: 6px 14px !important;
-  font-size: 11px !important;
-  font-weight: 650 !important;
-  color: #fff !important;
-  background: rgba(255, 255, 255, 0.1) !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
-  border-radius: 14px !important;
-  cursor: pointer !important;
-  transition: background 0.2s ease, border-color 0.2s ease !important;
-}
-.watch-page .btn-sm:hover {
-  background: var(--ui-accent) !important;
-  border-color: var(--ui-accent) !important;
-}
-
-/* ───────── NEU: Playback Controls Dock (Bottom Center) ───────── */
-.watch-page #playback-controls {
-  position: absolute !important;
-  bottom: 24px !important;
-  left: 50% !important;
-  transform: translateX(-50%) !important;
-  z-index: 10 !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 14px !important;
-  padding: 8px 20px !important;
-  background: rgba(15, 18, 20, 0.85) !important;
-  border: 1px solid var(--ui-border) !important;
-  border-radius: 999px !important;
-  box-shadow: 0 12px 36px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05) !important;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-}
-.watch-page #playback-controls.hidden {
-  display: none !important;
-}
-.watch-page .dock-btn {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  color: var(--ui-text) !important;
-  font-size: 14px !important;
-  width: 32px !important;
-  height: 32px !important;
-  border-radius: 50% !important;
-  cursor: pointer !important;
-  transition: transform 0.15s ease, background 0.2s ease, color 0.2s ease !important;
-}
-.watch-page .dock-btn:hover {
-  background: var(--ui-accent) !important;
-  color: #fff !important;
-  border-color: transparent !important;
-  transform: scale(1.05) !important;
-}
-.watch-page .dock-btn:active {
-  transform: scale(0.95) !important;
-}
-.watch-page .dock-time {
-  font-size: 12px !important;
-  font-weight: 500 !important;
-  color: #b2b8bd !important;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
-  min-width: 38px !important;
-  text-align: center !important;
-}
-.watch-page #playback-progress {
-  width: clamp(120px, 30vw, 400px) !important;
-  height: 4px !important;
-  accent-color: var(--ui-accent) !important;
-  background: rgba(255,255,255,0.15) !important;
-  border-radius: 2px !important;
-  outline: none !important;
-  -webkit-appearance: none !important;
-  cursor: pointer !important;
-  transition: height 0.1s ease !important;
-}
-.watch-page #playback-progress:hover {
-  height: 6px !important;
-}
-.watch-page #playback-progress::-webkit-slider-thumb {
-  -webkit-appearance: none !important;
-  width: 14px !important;
-  height: 14px !important;
-  border-radius: 50% !important;
-  background: #fff !important;
-  cursor: pointer !important;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
-  transition: transform 0.1s ease !important;
-}
-.watch-page #playback-progress::-webkit-slider-thumb:hover {
-  transform: scale(1.2) !important;
-}
-
 .watch-page #ascii-canvas {
   position: absolute !important;
   inset: 0 !important;
@@ -363,6 +269,7 @@
   object-fit: contain !important;
   display: block !important;
   background: #030405 !important;
+  cursor: pointer !important;
 }
 .watch-page #ascii-player { display: none !important; }
 .watch-page #watch-chrome { display: none !important; }
@@ -401,7 +308,7 @@
 }
 .watch-page #idle-overlay.hidden { display: none !important; }
 
-/* Status strip retains the app's real playback and performance feedback. */
+/* Status strip */
 .watch-page #statusbar {
   position: relative !important;
   z-index: 10 !important;
@@ -450,90 +357,3 @@
 .watch-page .state-error { color: #ff8589 !important; }
 .watch-page .status-fps,
 .watch-page .status-perf { color: #8d969c !important; font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important; }
-.watch-page #watch-error {
-  position: absolute !important;
-  z-index: 8 !important;
-  left: 50% !important;
-  bottom: 16px !important;
-  transform: translateX(-50%) !important;
-  max-width: min(90%, 680px) !important;
-  padding: 10px 14px !important;
-  border: 1px solid rgba(255,110,114,.24) !important;
-  border-radius: 10px !important;
-  background: rgba(42,15,17,.92) !important;
-  color: #ffb4b7 !important;
-  font-size: 12px !important;
-  text-align: center !important;
-  box-shadow: 0 8px 30px rgba(0,0,0,.25) !important;
-  backdrop-filter: blur(12px);
-}
-.watch-page .start-overlay {
-  position: absolute !important;
-  z-index: 7 !important;
-  left: 50% !important;
-  top: 50% !important;
-  transform: translate(-50%, -50%) !important;
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
-  gap: 12px !important;
-  max-width: calc(100% - 28px) !important;
-  padding: 22px 28px !important;
-  border: 1px solid rgba(255,255,255,.13) !important;
-  border-radius: 17px !important;
-  background: rgba(24,27,29,.94) !important;
-  color: #f5f6f7 !important;
-  font-size: 11px !important;
-  font-weight: 750 !important;
-  letter-spacing: .12em !important;
-  cursor: pointer !important;
-  box-shadow: 0 16px 50px rgba(0,0,0,.42) !important;
-  backdrop-filter: blur(18px);
-}
-.watch-page .start-icon {
-  display: grid !important;
-  place-items: center !important;
-  width: 51px !important;
-  height: 51px !important;
-  border-radius: 50% !important;
-  background: var(--ui-accent) !important;
-  color: #fff !important;
-  font-size: 17px !important;
-  letter-spacing: 0 !important;
-  box-shadow: 0 4px 20px rgba(228,74,79,.24) !important;
-}
-.watch-page .start-overlay small { color: #9ca4aa !important; font-size: 9px !important; letter-spacing: .1em !important; }
-.watch-page .start-overlay.hidden { display: none !important; }
-
-@media (max-width: 720px) {
-  .watch-page #topbar { min-height: 58px !important; padding-inline: 12px !important; }
-  .watch-page #brand { font-size: 16px !important; }
-  .watch-page #brand::before { width: 30px !important; height: 30px !important; }
-  .watch-page #brand::after { display: none !important; }
-  .watch-page #btn-stop { min-height: 34px !important; padding-inline: 11px !important; font-size: 11px !important; }
-  .watch-page #subbar { justify-content: flex-start !important; gap: 7px 12px !important; padding: 8px 12px !important; }
-  .watch-page #preset-group, .watch-page #display-mode-group { gap: 3px !important; }
-  .watch-page #preset-group::before, .watch-page #display-mode-group::before { font-size: 8px !important; margin-right: 2px !important; }
-  .watch-page .preset-btn, .watch-page .display-mode-btn { min-width: 34px !important; min-height: 30px !important; padding-inline: 8px !important; font-size: 10px !important; }
-  .watch-page #volume-group { margin-left: auto !important; }
-  .watch-page #volume-slider { width: 58px !important; }
-  .watch-page #player-container { margin: 8px !important; border-radius: 14px !important; }
-  .watch-page #statusbar { gap: 8px !important; min-height: 43px !important; padding-inline: 12px !important; }
-  .watch-page #status-title { font-size: 11px !important; }
-  .watch-page .status-fps, .watch-page .status-perf { display: none !important; }
-  
-  /* Responsive Anpassungen für neue UI */
-  .watch-page #playback-controls { padding: 6px 14px !important; gap: 8px !important; bottom: 16px !important; }
-  .watch-page #playback-progress { width: clamp(80px, 40vw, 200px) !important; }
-  .watch-page #creator-channel-bar { top: 12px !important; left: 12px !important; padding: 6px 12px !important; }
-}
-
-@media (max-width: 410px) {
-  .watch-page #subbar { column-gap: 7px !important; }
-  .watch-page #display-mode-group::before { display: none !important; }
-  .watch-page #preset-group::before { content: "Q" !important; }
-  .watch-page #volume-slider { width: 45px !important; }
-  .watch-page .preset-btn, .watch-page .display-mode-btn { padding-inline: 6px !important; }
-  .watch-page #status-live { display: none !important; }
-  .watch-page .dock-time { display: none !important; }
-}
