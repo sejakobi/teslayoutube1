@@ -1,5 +1,5 @@
-// ASCILINE YouTube streamer — Tesla browser frontend (Cleaned WebAudio & WebCodecs Canvas Edition).
-// Features: Infinite Scroll, Channel Search, Stealth Transport Controls, Audio/Video Sync, Tesla Fix, Auto-Recovery
+// CYBER.play / ASCILINE YouTube streamer — Tesla browser frontend.
+// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Loading Progress %, Immersive Fullscreen, Auto-Recovery
 
 'use strict';
 
@@ -22,16 +22,21 @@ const volumeSlider        = document.getElementById('volume-slider');
 const playerContainer     = document.getElementById('player-container');
 const asciiPlayer         = document.getElementById('ascii-player');
 const canvas              = document.getElementById('ascii-canvas');
-// WICHTIG für Tesla (Linux/X11 Chromium 100): kein desynchronized: true verwenden, da sonst Standbild nach Frame 1!
+// WICHTIG für Tesla (Linux/X11 Chromium 100): kein desynchronized: true verwenden!
 const ctx                 = canvas.getContext('2d', { alpha: false });
 const idleOverlay         = document.getElementById('idle-overlay');
+const idleSub             = document.getElementById('idle-sub');
+const idleArrow           = document.getElementById('idle-arrow');
+const loadingBarFill      = document.getElementById('loading-bar-fill');
+const loadingPercent      = document.getElementById('loading-percent');
 
-// Custom Transport Controls
+// Floating Transport Controls
 const playbackControls    = document.getElementById('playback-controls');
 const btnPause            = document.getElementById('btn-pause');
 const playbackProgress    = document.getElementById('playback-progress');
 const playbackCurrentTime = document.getElementById('playback-current-time');
 const playbackDuration    = document.getElementById('playback-duration');
+const btnFullscreen       = document.getElementById('btn-fullscreen');
 
 // Channel Banner & Scroll
 const channelBanner       = document.getElementById('channel-banner');
@@ -76,7 +81,15 @@ let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
 
-// Auto-Recovery State (gegen Abbrüche bei Netzunterbrechungen oder Stream-Fehlern)
+// Auto-Hide Fullscreen UI Timer (blendet nach 3.2s Inaktivität alles Störende aus)
+const UI_IDLE_HIDE_MS = 3200;
+let uiIdleTimer       = null;
+
+// Loading Progress State (0% - 100%)
+let loadingProgressVal   = 0;
+let loadingCreepTimer    = null;
+
+// Auto-Recovery State
 const MEDIA_MAX_RETRIES = 12;
 let mediaRetryCount     = 0;
 let mediaRetryTimer     = null;
@@ -121,6 +134,70 @@ let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
+// ───────── Ladebildschirm mit Fortschrittsbalken & Prozentanzeige ─────────
+function stopLoadingCreep() {
+    if (loadingCreepTimer !== null) {
+        clearInterval(loadingCreepTimer);
+        loadingCreepTimer = null;
+    }
+}
+
+function setLoadingProgress(percent, headlineText, detailText) {
+    loadingProgressVal = Math.max(0, Math.min(100, Math.round(percent)));
+    if (loadingBarFill) loadingBarFill.style.width = `${loadingProgressVal}%`;
+    if (loadingPercent) loadingPercent.textContent = `${loadingProgressVal}%`;
+    if (headlineText && idleSub) idleSub.textContent = headlineText;
+    if (detailText && idleArrow) idleArrow.textContent = detailText;
+}
+
+function startLoadingCreep(startPct, maxPct, headlineText, detailText) {
+    stopLoadingCreep();
+    if (startPct > loadingProgressVal) {
+        setLoadingProgress(startPct, headlineText, detailText);
+    } else {
+        setLoadingProgress(loadingProgressVal, headlineText, detailText);
+    }
+    loadingCreepTimer = setInterval(() => {
+        if (loadingProgressVal < maxPct) {
+            const step = loadingProgressVal < 40 ? 3 : (loadingProgressVal < 75 ? 2 : 1);
+            setLoadingProgress(Math.min(maxPct, loadingProgressVal + step));
+        }
+    }, 220);
+}
+
+// ───────── Vollbild Auto-Hide Steuerung (blendet UI nach 3.2s aus) ─────────
+function wakeUpUiChrome() {
+    document.body.classList.remove('ui-idle');
+    if (uiIdleTimer !== null) {
+        clearTimeout(uiIdleTimer);
+        uiIdleTimer = null;
+    }
+    // Nur ausblenden, wenn aktiv abgespielt wird, nicht pausiert ist und der Benutzer nicht gerade spult
+    if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing && idleOverlay && idleOverlay.classList.contains('hidden')) {
+        uiIdleTimer = setTimeout(() => {
+            if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing) {
+                document.body.classList.add('ui-idle');
+            }
+        }, UI_IDLE_HIDE_MS);
+    }
+}
+
+['pointermove', 'pointerdown', 'touchstart', 'keydown', 'wheel'].forEach(evtName => {
+    window.addEventListener(evtName, wakeUpUiChrome, { passive: true });
+});
+
+if (btnFullscreen) {
+    btnFullscreen.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen?.().catch(() => {});
+        } else {
+            document.exitFullscreen?.().catch(() => {});
+        }
+        wakeUpUiChrome();
+    });
+}
+
 // ───────── Auto-Recovery Helpers ─────────
 function clearRecoveryTimers() {
     if (mediaRetryTimer !== null) {
@@ -142,11 +219,10 @@ function getCurrentPlaybackSecond() {
 
 function scheduleMediaRecovery(reason, forceNewSession = false) {
     if (appState !== 'playing' && appState !== 'resolving') return;
-    if (mediaRetryTimer !== null) return; // Bereits ein Reconnect geplant
+    if (mediaRetryTimer !== null) return;
 
     const resumeSec = getCurrentPlaybackSecond();
 
-    // Wenn wir bereits ganz am Ende des Videos sind, normal beenden statt Reconnect
     if (!mediaIsLive && mediaDurationSec > 0 && resumeSec >= mediaDurationSec - 2) {
         setStatus('STREAM ENDE', 'idle');
         return;
@@ -154,7 +230,7 @@ function scheduleMediaRecovery(reason, forceNewSession = false) {
 
     mediaRetryCount++;
     if (mediaRetryCount > MEDIA_MAX_RETRIES) {
-        setError(`Verbindung nach ${MEDIA_MAX_RETRIES} Versuchen abgebrochen (${reason}). Klicke auf das Bild zum Fortsetzen.`);
+        setError(`Verbindung nach ${MEDIA_MAX_RETRIES} Versuchen unterbrochen (${reason}). Tippe auf das Bild zum Fortsetzen.`);
         return;
     }
 
@@ -166,7 +242,6 @@ function scheduleMediaRecovery(reason, forceNewSession = false) {
         statusPerf.classList.remove('hidden');
     }
 
-    // Aktuellen Stream sauber anhalten, aber das letzte Bild auf dem Canvas stehen lassen!
     stopNativeCanvasSource();
     stopCustomWebAudio();
 
@@ -439,7 +514,7 @@ function openChannelView(channelObj) {
     void runSearch({ append: false });
 }
 
-// ───────── Custom Transport Controls (Play/Pause & Seek) ─────────
+// ───────── Floating Transport Controls (Play/Pause & Wiedergabezeit) ─────────
 function formatPlaybackTime(seconds) {
     if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
     seconds = Math.floor(seconds);
@@ -488,6 +563,11 @@ async function toggleCustomPause() {
             await audioContext.suspend().catch(() => {});
         }
         setStatus('PAUSED · CANVAS', 'idle');
+        document.body.classList.remove('ui-idle');
+        if (uiIdleTimer !== null) {
+            clearTimeout(uiIdleTimer);
+            uiIdleTimer = null;
+        }
     } else {
         const pausedDuration = performance.now() - pauseStartedAt;
         if (webCodecsState.playbackStart !== null) {
@@ -497,6 +577,7 @@ async function toggleCustomPause() {
             await audioContext.resume().catch(() => {});
         }
         setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
+        wakeUpUiChrome();
     }
     updatePlaybackControlsUI(getCurrentPlaybackSecond());
 }
@@ -511,17 +592,23 @@ function seekCustomCanvas(targetSeconds) {
     lastKnownPosition = clamped;
     isPlaybackPaused = false;
     updatePlaybackControlsUI(clamped);
+    wakeUpUiChrome();
     void startNativeCanvasMedia(sessionId, canvas.width || 640, canvas.height || 360, mediaDurationSec, mediaIsLive, clamped, true);
 }
 
 if (btnPause) {
-    btnPause.addEventListener('click', () => { void toggleCustomPause(); });
+    btnPause.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void toggleCustomPause();
+    });
 }
 
 if (playbackProgress) {
+    playbackProgress.addEventListener('click', (e) => e.stopPropagation());
     playbackProgress.addEventListener('input', () => {
         if (!(mediaDurationSec > 0) || mediaIsLive) return;
         isUserScrubbing = true;
+        wakeUpUiChrome();
         const previewSec = (Number(playbackProgress.value) / 1000) * mediaDurationSec;
         if (playbackCurrentTime) playbackCurrentTime.textContent = formatPlaybackTime(previewSec);
     });
@@ -533,19 +620,25 @@ if (playbackProgress) {
     });
 }
 
-// ───────── Preset & Mode Selection ─────────
+// ───────── Direkt-Wechsel für Qualitäts-Presets & Darstellungsmodus ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const p = btn.dataset.preset;
         if (p === selectedPreset) return;
         selectedPreset = p;
         presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === p));
-        if ((appState === 'playing' || appState === 'error') && sessionId) {
+        wakeUpUiChrome();
+
+        // Sofortiger Wechsel während der laufenden Wiedergabe an der aktuellen Sekunde!
+        if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
             clearRecoveryTimers();
             mediaRetryCount = 0;
-            void doPlay(getCurrentPlaybackSecond(), null, true);
-        } else {
-            updateConfigHint();
+            const resumeSec = getCurrentPlaybackSecond();
+            if (presetHint) {
+                presetHint.textContent = `Qualität wird auf ${p.toUpperCase()} umgestellt…`;
+                presetHint.classList.remove('hidden');
+            }
+            void doPlay(resumeSec, null, true);
         }
     });
 });
@@ -554,18 +647,20 @@ displayModeBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const mode = btn.dataset.displayMode;
         if (mode !== 'ascii' && mode !== 'canvas') return;
+        if (mode === selectedDisplayMode) return;
         selectedDisplayMode = mode;
         displayModeBtns.forEach(b => b.classList.toggle('active', b.dataset.displayMode === mode));
-        updateConfigHint();
+        wakeUpUiChrome();
+
+        // Sofortiger Modus-Wechsel (ASCII <-> Canvas)
+        if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
+            clearRecoveryTimers();
+            mediaRetryCount = 0;
+            const resumeSec = getCurrentPlaybackSecond();
+            void doPlay(resumeSec, null, false);
+        }
     });
 });
-
-function updateConfigHint() {
-    if (presetHint && (appState === 'playing' || appState === 'resolving')) {
-        presetHint.textContent = 'Änderungen werden beim nächsten PLAY übernommen';
-        presetHint.classList.remove('hidden');
-    }
-}
 
 // ───────── Volume / Mute ─────────
 let isMuted = false;
@@ -576,6 +671,7 @@ if (volumeSlider) {
         if (audioGainNode) audioGainNode.gain.value = volume;
         isMuted = volume === 0;
         updateMuteBtn();
+        wakeUpUiChrome();
     });
 }
 
@@ -584,6 +680,7 @@ if (btnMute) {
         isMuted = !isMuted;
         if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider ? volumeSlider.value : 1);
         updateMuteBtn();
+        wakeUpUiChrome();
     });
 }
 
@@ -678,7 +775,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
             }).catch(() => {});
         }
 
-        // Falls der Audio-Stream vorzeitig endet, während das Video noch läuft -> Audio neu verbinden!
         if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
             const curSec = getCurrentPlaybackSecond();
             if (mediaIsLive || !(mediaDurationSec > 0) || curSec < mediaDurationSec - 4) {
@@ -791,8 +887,8 @@ function buildVideoCanvas(width, height, preserveDimensions = false) {
 
 function layoutVideoCanvas() {
     if (!canvasVideoMode || !canvas.width || !canvas.height || !playerContainer) return;
-    const cw = playerContainer.clientWidth;
-    const ch = playerContainer.clientHeight;
+    const cw = playerContainer.clientWidth || window.innerWidth;
+    const ch = playerContainer.clientHeight || window.innerHeight;
     const scale = Math.min(cw / canvas.width, ch / canvas.height);
     const w = Math.max(1, Math.floor(canvas.width * scale));
     const h = Math.max(1, Math.floor(canvas.height * scale));
@@ -931,7 +1027,6 @@ function startWebCodecsDrawLoop(state) {
                     lastKnownPosition = seekBaseSeconds + state.lastPresentedTime;
                     updatePlaybackControlsUI(lastKnownPosition);
 
-                    // Sobald der Stream wieder stabil 25 Frames gezeichnet hat -> Fehlerzähler zurücksetzen!
                     if (state.totalDrawn >= 25 && mediaRetryCount > 0) {
                         mediaRetryCount = 0;
                         if (statusPerf) statusPerf.classList.add('hidden');
@@ -996,6 +1091,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     webCodecsState = state;
     if (!isRecovery) {
         setStatus('BUFFERING · WEBCODECS', 'resolving');
+        startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
         if (statusPerf) statusPerf.classList.add('hidden');
     }
     updatePlaybackControlsUI(seekBaseSeconds);
@@ -1006,10 +1102,13 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         const mediaUrl = `/media?session=${encodeURIComponent(sid)}&start=${encodeURIComponent(seekBaseSeconds.toFixed(3))}&_=${Date.now()}`;
         const response = await fetch(mediaUrl, { cache: 'no-store' });
         if (!response.ok || !response.body) {
-            // Bei 404 ist die Session auf dem Server abgelaufen -> Neue Session anfordern!
             const needNewSession = response.status === 404 || response.status === 409;
             scheduleMediaRecovery(`HTTP ${response.status}`, needNewSession);
             return;
+        }
+
+        if (!isRecovery) {
+            startLoadingCreep(75, 92, 'Stream empfangen...', 'Initialisiere WebCodecs Decoder...');
         }
 
         const mp4File = MP4Box.createFile();
@@ -1050,6 +1149,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                     return;
                 }
 
+                if (!isRecovery) {
+                    setLoadingProgress(95, 'Decoder bereit...', 'Erster Frame wird berechnet...');
+                }
+
                 state.decoder = new VideoDecoder({
                     output(frame) {
                         if (state.stopped || webCodecsState !== state) {
@@ -1061,11 +1164,15 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                         if (!state.started) {
                             state.started = true;
                             appState = 'playing';
+                            stopLoadingCreep();
+                            setLoadingProgress(100, 'Wiedergabe läuft', '100%');
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
+                            if (presetHint) presetHint.classList.add('hidden');
                             if (idleOverlay) idleOverlay.classList.add('hidden');
                             canvas.style.display = 'block';
                             updatePlaybackControlsUI(seekBaseSeconds);
                             startWebCodecsDrawLoop(state);
+                            wakeUpUiChrome();
                         }
                     },
                     error(error) {
@@ -1127,7 +1234,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         }
 
         if (!state.stopped && webCodecsState === state) {
-            // Warte kurz, bis die restlichen gepufferten Samples gezeichnet wurden
             let waitLoops = 0;
             while (!state.stopped && (state.sampleQueue.length > 0 || state.frames.length > 0) && waitLoops < 60) {
                 pumpSampleQueue(state);
@@ -1170,9 +1276,11 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     if (!isRecovery) {
         mediaRetryCount = 0;
         lastKnownPosition = Number(resumeAtSec) || 0;
+        loadingProgressVal = 0;
+        if (idleOverlay) idleOverlay.classList.remove('hidden');
+        startLoadingCreep(8, 50, 'Video wird geladen...', 'Stream-Quelle wird aufgelöst...');
     }
 
-    if (presetHint) presetHint.classList.add('hidden');
     stopCustomWebAudio();
     stopPoll();
     closeWs();
@@ -1189,8 +1297,8 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     appState      = 'resolving';
     currentPreset = selectedPreset;
     setUiState('resolving');
-    setStatus(isRecovery ? `RECONNECTING (${mediaRetryCount}/${MEDIA_MAX_RETRIES})…` : 'RESOLVING…', 'resolving');
-    if (statusTitle && !isRecovery) statusTitle.textContent = selection ? 'ASCILINE' : query;
+    setStatus(isRecovery ? `SWITCHING / SYNC (${currentPreset.toUpperCase()})…` : 'RESOLVING…', 'resolving');
+    if (statusTitle && !isRecovery) statusTitle.textContent = selection ? 'CYBER.play' : query;
     if (statusLive && !isRecovery) statusLive.classList.add('hidden');
     if (statusFps && !isRecovery) statusFps.textContent = '';
     if (statusPerf && !isRecovery) statusPerf.classList.add('hidden');
@@ -1231,8 +1339,7 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     setUiState('playing');
     updateTitle(data.title, data.is_live);
 
-    if (idleOverlay) idleOverlay.classList.add('hidden');
-    if (selectedDisplayMode === 'canvas' || selection) {
+    if (selectedDisplayMode === 'canvas') {
         void startNativeCanvasMedia(
             sessionId,
             data.canvas_width,
@@ -1250,6 +1357,7 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
 
 async function doStop() {
     clearRecoveryTimers();
+    stopLoadingCreep();
     mediaRetryCount = 0;
     lastKnownPosition = 0;
     stopCustomWebAudio();
@@ -1274,7 +1382,6 @@ function startPoll() {
             const r = await fetch('/api/status');
             data = await r.json();
         } catch (_) {
-            // Kurze Netzunterbrechung beim Status-Poll ignorieren
             return;
         }
         if (data.title) updateTitle(data.title, data.is_live);
@@ -1282,7 +1389,6 @@ function startPoll() {
             mediaDurationSec = Number(data.duration) || 0;
         }
         if (data.state === 'error') {
-            // Nicht hart abbrechen, sondern automatisch ab der letzten Sekunde neu verbinden!
             scheduleMediaRecovery(data.error || 'Session-Resync', true);
         }
     }, 3000);
@@ -1307,6 +1413,8 @@ function setStatus(label, stateClass) {
 
 function setError(msg) {
     clearRecoveryTimers();
+    stopLoadingCreep();
+    document.body.classList.remove('ui-idle');
     appState = 'error';
     if (statusTitle) statusTitle.textContent = '⚠ ' + msg;
     setStatus('ERROR', 'error');
@@ -1314,8 +1422,8 @@ function setError(msg) {
     if (statusFps) statusFps.textContent = '';
     if (statusPerf) statusPerf.classList.add('hidden');
     setUiState('idle');
-    // Falls noch kein einziges Bild gezeichnet wurde, zeige das Idle-Overlay
     if (idleOverlay && (!webCodecsState || !webCodecsState.started)) {
+        setLoadingProgress(0, 'Fehler beim Laden', msg);
         idleOverlay.classList.remove('hidden');
     }
 }
@@ -1327,7 +1435,9 @@ function updateTitle(title, isLive) {
 
 function finishPlayback() {
     clearRecoveryTimers();
+    stopLoadingCreep();
     stopCustomWebAudio();
+    document.body.classList.remove('ui-idle');
     appState          = 'idle';
     readyToRender     = false;
     isPlaybackPaused  = false;
@@ -1478,7 +1588,10 @@ function connectWs(sid) {
     ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = () => setStatus('BUFFERING', 'resolving');
+    ws.onopen = () => {
+        setStatus('BUFFERING · ASCII', 'resolving');
+        startLoadingCreep(60, 95, 'ASCII-Stream verbunden...', 'Warte auf ersten Frame...');
+    };
 
     ws.onmessage = (event) => {
         if (typeof event.data === 'string') {
@@ -1498,7 +1611,10 @@ function connectWs(sid) {
                     pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
                     buildCanvas(parseInt(p[3]), parseInt(p[4]));
                 }
-                setStatus('PLAYING', 'playing');
+                stopLoadingCreep();
+                setLoadingProgress(100, 'Wiedergabe läuft', '100%');
+                setStatus('PLAYING · ASCII', 'playing');
+                if (presetHint) presetHint.classList.add('hidden');
                 if (idleOverlay) idleOverlay.classList.add('hidden');
 
                 void startHiddenWebAudio(sid, 0);
@@ -1506,6 +1622,7 @@ function connectWs(sid) {
                 lastFpsUpdate = performance.now();
                 fpsWindowStart = lastFpsUpdate;
                 requestAnimationFrame(renderFrame);
+                wakeUpUiChrome();
                 return;
             }
             const nl  = event.data.indexOf('\n');
@@ -1558,12 +1675,16 @@ if (btnPlay) btnPlay.addEventListener('click', () => { void doPlay(0); });
 if (btnStop) btnStop.addEventListener('click', doStop);
 
 window.addEventListener('resize', () => {
-    if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
+    if (canvasVideoMode && (appState === 'playing' || appState === 'resolving')) layoutVideoCanvas();
     else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
 });
 
 canvas.addEventListener('click', () => {
-    // Falls nach 12 Fehlversuchen doch mal in den Error-State gewechselt wurde: Klick setzt sofort fort!
+    // Wenn das UI ausgeblendet war, holt der erste Tipp auf das Bild nur die Steuerelemente zurück
+    if (document.body.classList.contains('ui-idle')) {
+        wakeUpUiChrome();
+        return;
+    }
     if (appState === 'error' && canvasVideoMode) {
         mediaRetryCount = 0;
         appState = 'playing';
@@ -1574,13 +1695,13 @@ canvas.addEventListener('click', () => {
         if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
             audioContext.resume().catch(() => {});
             if (statusPerf) statusPerf.classList.add('hidden');
+            wakeUpUiChrome();
             return;
         }
         void toggleCustomPause();
     }
 });
 
-// Wenn das Fahrzeug/Browser die Netzwerkverbindung wiederherstellt, sofort Reconnect anstoßen
 window.addEventListener('online', () => {
     if ((appState === 'playing' || appState === 'error') && canvasVideoMode) {
         mediaRetryCount = 0;
@@ -1611,7 +1732,6 @@ if (location.pathname === '/watch') {
     if (selection) {
         window.setTimeout(() => { void doPlay(0, selection); }, 50);
     } else {
-        const arrow = document.getElementById('idle-arrow');
-        if (arrow) arrow.textContent = 'Kein Video ausgewählt – bitte zur Suche zurückkehren.';
+        setLoadingProgress(0, 'Keine Auswahl', 'Bitte kehre zur Mediathek zurück und wähle ein Video.');
     }
 }
