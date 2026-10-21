@@ -1153,7 +1153,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                     setLoadingProgress(95, 'Decoder bereit...', 'Erster Frame wird berechnet...');
                 }
 
-                state.decoder = new VideoDecoder({
+state.decoder = new VideoDecoder({
                     output(frame) {
                         if (state.stopped || webCodecsState !== state) {
                             try { frame.close(); } catch (_) {}
@@ -1168,7 +1168,17 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                             setLoadingProgress(100, 'Wiedergabe läuft', '100%');
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
-                            if (idleOverlay) idleOverlay.classList.add('hidden');
+                            
+                            // WICHTIG: Hier wird der Ladebildschirm nun zuverlässig und sofort ausgeblendet!
+                            if (idleOverlay) {
+                                idleOverlay.style.opacity = '0';
+                                idleOverlay.style.transition = 'opacity 0.4s ease';
+                                setTimeout(() => {
+                                    idleOverlay.classList.add('hidden');
+                                    idleOverlay.style.opacity = '';
+                                }, 400);
+                            }
+
                             canvas.style.display = 'block';
                             updatePlaybackControlsUI(seekBaseSeconds);
                             startWebCodecsDrawLoop(state);
@@ -1176,10 +1186,8 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                         }
                     },
                     error(error) {
-                        console.warn('VideoDecoder error, triggering auto-recovery:', error);
-                        if (!state.stopped && webCodecsState === state) {
-                            scheduleMediaRecovery('Decoder-Resync', false);
-                        }
+                        console.error('VideoDecoder error:', error);
+                        if (!state.stopped) scheduleMediaRecovery('Decoder-Fehler', false);
                     },
                 });
 
