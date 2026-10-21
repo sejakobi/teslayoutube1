@@ -485,3 +485,28 @@ footer b {
   justify-content: center;
   color: var(--accent, #ff0000);
 }
+/* Erweitertes Kanal-Design in den Suchergebnissen */
+.channel-card {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 16px !important;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.channel-card:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.channel-avatar {
+  width: 72px !important;
+  height: 72px !important;
+  min-width: 72px;
+  border-radius: 50% !important;
+  aspect-ratio: 1/1 !important;
+  object-fit: cover;
+}
