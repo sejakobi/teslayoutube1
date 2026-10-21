@@ -1089,9 +1089,14 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         decoderConfigured: false,
     };
     webCodecsState = state;
-    if (!isRecovery) {
+if (!isRecovery) {
         setStatus('BUFFERING · WEBCODECS', 'resolving');
-        startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
+        // Ladebildschirm nur anzeigen, wenn er nicht ohnehin schon versteckt ist (kein Aufblinken bei Reconnects)
+        if (!idleOverlay || idleOverlay.classList.contains('hidden')) {
+            // Im laufenden Betrieb keinen Vollbild-Ladebalken einblenden
+        } else {
+            startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
+        }
         if (statusPerf) statusPerf.classList.add('hidden');
     }
     updatePlaybackControlsUI(seekBaseSeconds);
@@ -1161,7 +1166,7 @@ state.decoder = new VideoDecoder({
                         }
                         state.frames.push(frame);
                         state.frames.sort((a, b) => a.timestamp - b.timestamp);
-                        if (!state.started) {
+               if (!state.started) {
                             state.started = true;
                             appState = 'playing';
                             stopLoadingCreep();
@@ -1169,7 +1174,7 @@ state.decoder = new VideoDecoder({
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
                             
-                            // WICHTIG: Hier wird der Ladebildschirm nun zuverlässig und sofort ausgeblendet!
+                            // Sanftes Ausblenden des Ladebildschirms, das sich danach nicht mehr reaktiviert
                             if (idleOverlay) {
                                 idleOverlay.style.opacity = '0';
                                 idleOverlay.style.transition = 'opacity 0.4s ease';
