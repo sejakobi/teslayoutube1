@@ -518,7 +518,7 @@ function renderFrame(now) {
     asciiPlayer.style.color   = 'transparent';
 }
 
-// ───────── WebCodecs Video Decoder → Visible Canvas ─────────
+// ───────── WebCodecs Video Decoder → Visible Canvas (Mit Flow-Control & Keyframe-Schutz) ─────────
 function stopNativeCanvasSource() {
     const state = webCodecsState;
     webCodecsState = null;
@@ -532,6 +532,8 @@ function stopNativeCanvasSource() {
         for (const frame of state.frames || []) {
             try { frame.close(); } catch (_) {}
         }
+        state.frames = [];
+        state.sampleQueue = [];
         if (state.file && typeof state.file.stop === 'function') {
             try { state.file.stop(); } catch (_) {}
         }
@@ -540,14 +542,52 @@ function stopNativeCanvasSource() {
 
 function getMp4VideoDescription(mp4File, track) {
     const trak = mp4File.getTrackById(track.id);
-    const entry = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl &&
-        trak.mdia.minf.stbl.stsd && trak.mdia.minf.stbl.stsd.entries &&
-        trak.mdia.minf.stbl.stsd.entries[0];
-    const box = entry && (entry.avcC || entry.hvcC || entry.vpcC || entry.av1C);
+    const entries = trak && trak.mdia && trak.mdia.minf && trak.mdia.minf.stbl &&
+        trak.mdia.minf.stbl.stsd && trak.mdia.minf.stbl.stsd.entries;
+    if (!entries || !entries.length) return undefined;
+    const entry = entries[0];
+    const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
     if (!box || !window.MP4Box || !MP4Box.DataStream) return undefined;
     const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
     box.write(stream);
-    return new Uint8Array(stream.buffer).slice(8);
+    return new Uint8Array(stream.buffer, 8);
+}
+
+// Füttert den VideoDecoder kontrolliert aus der Warteschlange, damit kein Puffer-Überlauf entsteht
+function pumpSampleQueue(state) {
+    if (!state || state.stopped || !state.decoderConfigured || !state.decoder) return;
+    if (state.decoder.state !== 'configured') return;
+
+    while (
+        state.sampleQueue.length > 0 &&
+        state.decoder.decodeQueueSize < 12 &&
+        state.frames.length < 24
+    ) {
+        const sample = state.sampleQueue.shift();
+        if (!sample || !sample.data) continue;
+
+        // WebCodecs zwingt dazu, dass das allererste Sample nach configure() ein Keyframe ist!
+        if (!state.gotFirstKeyframe) {
+            if (!sample.is_sync) continue;
+            state.gotFirstKeyframe = true;
+        }
+
+        if (state.timestampBase === null) state.timestampBase = sample.cts;
+        const timestamp = Math.round(((sample.cts - state.timestampBase) * 1e6) / state.timescale);
+        const duration = Math.max(1, Math.round((sample.duration * 1e6) / state.timescale));
+
+        try {
+            state.decoder.decode(new EncodedVideoChunk({
+                type: sample.is_sync ? 'key' : 'delta',
+                timestamp: Math.max(0, timestamp),
+                duration: duration,
+                data: sample.data,
+            }));
+            state.sampleCount++;
+        } catch (err) {
+            console.warn('Video sample decode error:', err);
+        }
+    }
 }
 
 function startWebCodecsDrawLoop(state) {
@@ -556,24 +596,41 @@ function startWebCodecsDrawLoop(state) {
         state.raf = 0;
         if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
 
-        if (!isPlaybackPaused) {
-            if (state.playbackStart === null && state.frames.length) {
+        // Nachschub in den Decoder schieben, sobald Platz im Frame-Puffer ist
+        pumpSampleQueue(state);
+
+        if (!isPlaybackPaused && state.frames.length > 0) {
+            if (state.playbackStart === null) {
                 state.playbackStart = now - (state.frames[0].timestamp / 1000);
             }
-            const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+            const videoClock = (now - state.playbackStart) / 1000;
 
-            while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
+            // Falls die Uhr durch einen kurzen Hänger stark abweicht (> 1.5s), Uhr neu synchronisieren
+            const firstFrameSec = state.frames[0].timestamp / 1e6;
+            if (Math.abs(firstFrameSec - videoClock) > 1.5) {
+                state.playbackStart = now - (state.frames[0].timestamp / 1000);
+            }
+
+            const adjustedClock = (now - state.playbackStart) / 1000;
+
+            // Zu alte Frames verwerfen
+            while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= adjustedClock + 0.02) {
                 const older = state.frames.shift();
                 try { older.close(); } catch (_) {}
             }
-            if (state.frames.length && state.frames[0].timestamp / 1e6 <= videoClock + 0.050) {
+
+            // Aktuellen Frame zeichnen (oder sofort den allerersten Frame zeigen!)
+            if (state.frames.length > 0 && (state.drawn === 0 || state.frames[0].timestamp / 1e6 <= adjustedClock + 0.05)) {
                 const frame = state.frames.shift();
                 try {
-                    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-                        canvas.width = frame.displayWidth;
-                        canvas.height = frame.displayHeight;
+                    const fw = frame.displayWidth || frame.codedWidth || 640;
+                    const fh = frame.displayHeight || frame.codedHeight || 360;
+                    if (canvas.width !== fw || canvas.height !== fh) {
+                        canvas.width = fw;
+                        canvas.height = fh;
                         layoutVideoCanvas();
                     }
+                    canvas.style.display = 'block';
                     ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
                     state.drawn++;
                     state.lastPresentedTime = frame.timestamp / 1e6;
@@ -587,7 +644,7 @@ function startWebCodecsDrawLoop(state) {
 
             if (!state.fpsStart) state.fpsStart = now;
             if (now - state.fpsStart >= 1000) {
-                const fps = Math.round(state.drawn * 1000 / Math.max(1, now - state.fpsStart));
+                const fps = Math.round((state.drawn * 1000) / Math.max(1, now - state.fpsStart));
                 statusFps.textContent = `FPS ${fps} · ${canvas.width}×${canvas.height} · WebCodecs`;
                 state.drawn = 0;
                 state.fpsStart = now;
@@ -614,9 +671,24 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
 
     stopNativeCanvasSource();
     const state = {
-        stopped: false, file: null, decoder: null, reader: null, raf: 0,
-        frames: [], playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
-        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false,
+        stopped: false,
+        file: null,
+        decoder: null,
+        reader: null,
+        raf: 0,
+        frames: [],
+        sampleQueue: [],
+        gotFirstKeyframe: false,
+        playbackStart: null,
+        drawn: 0,
+        fpsStart: 0,
+        lastPresentedTime: 0,
+        started: false,
+        track: null,
+        timescale: 1,
+        timestampBase: null,
+        sampleCount: 0,
+        decoderConfigured: false,
     };
     webCodecsState = state;
     setStatus('BUFFERING · WEBCODECS', 'resolving');
@@ -630,6 +702,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         const mediaUrl = `/media?session=${encodeURIComponent(sid)}&start=${encodeURIComponent(seekBaseSeconds.toFixed(3))}&_=${Date.now()}`;
         const response = await fetch(mediaUrl, { cache: 'no-store' });
         if (!response.ok || !response.body) throw new Error(`Videostream HTTP ${response.status}`);
+        
         const mp4File = MP4Box.createFile();
         state.file = mp4File;
         mp4File.onError = (message) => {
@@ -638,7 +711,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         mp4File.onReady = (info) => {
             if (state.stopped || webCodecsState !== state) return;
             const track = (info.videoTracks || [])[0];
-            if (!track) { setError('Der Stream enthält keine unterstützte Videospur.'); return; }
+            if (!track) {
+                setError('Der Stream enthält keine unterstützte Videospur.');
+                return;
+            }
             state.track = track;
             state.timescale = track.timescale || 1;
             if (!mediaDurationSec && info.duration && info.timescale) {
@@ -646,383 +722,91 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             }
             const description = getMp4VideoDescription(mp4File, track);
             const config = {
-                codec: track.codec,
-                codedWidth: track.video && track.video.width || track.track_width || fallbackWidth || 640,
-                codedHeight: track.video && track.video.height || track.track_height || fallbackHeight || 360,
+                codec: track.codec.startsWith('avc1') ? track.codec : 'avc1.64001f',
+                codedWidth: (track.video && track.video.width) || track.track_width || fallbackWidth || 640,
+                codedHeight: (track.video && track.video.height) || track.track_height || fallbackHeight || 360,
             };
             if (description) config.description = description;
-            const support = VideoDecoder.isConfigSupported ? VideoDecoder.isConfigSupported(config) : Promise.resolve({ supported: true, config });
+
+            const support = VideoDecoder.isConfigSupported
+                ? VideoDecoder.isConfigSupported(config)
+                : Promise.resolve({ supported: true, config });
+
             support.then((result) => {
                 if (state.stopped || webCodecsState !== state) return;
                 if (!result.supported) throw new Error(`Codec nicht unterstützt: ${config.codec}`);
+                
                 state.decoder = new VideoDecoder({
                     output(frame) {
-                        if (state.stopped || webCodecsState !== state) { frame.close(); return; }
-                        state.frames.push(frame);
-                        while (state.frames.length > 18) {
-                            const old = state.frames.shift();
-                            try { old.close(); } catch (_) {}
+                        if (state.stopped || webCodecsState !== state) {
+                            try { frame.close(); } catch (_) {}
+                            return;
                         }
+                        state.frames.push(frame);
                         if (!state.started) {
                             state.started = true;
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             idleOverlay.classList.add('hidden');
+                            canvas.style.display = 'block';
                             updatePlaybackControlsUI(seekBaseSeconds);
                             startWebCodecsDrawLoop(state);
                         }
                     },
                     error(error) {
+                        console.error('VideoDecoder error:', error);
                         if (!state.stopped) setError(`VideoDecoder: ${error.message || error}`);
                     },
                 });
+
                 state.decoder.configure(result.config || config);
                 state.decoderConfigured = true;
-                mp4File.setExtractionOptions(track.id, null, { nbSamples: 30 });
+                mp4File.setExtractionOptions(track.id, null, { nbSamples: 8 });
                 mp4File.start();
+                pumpSampleQueue(state);
             }).catch((err) => {
                 if (!state.stopped) setError(`WebCodecs-Konfiguration fehlgeschlagen: ${err.message || err}`);
             });
         };
+
         mp4File.onSamples = (trackId, user, samples) => {
-            if (state.stopped || !state.decoderConfigured || !state.decoder) return;
+            if (state.stopped || webCodecsState !== state) return;
             for (const sample of samples) {
-                if (state.timestampBase === null) state.timestampBase = sample.cts;
-                const timestamp = Math.round((sample.cts - state.timestampBase) * 1e6 / state.timescale);
-                try {
-                    state.decoder.decode(new EncodedVideoChunk({
-                        type: sample.is_sync ? 'key' : 'delta',
-                        timestamp: Math.max(0, timestamp),
-                        duration: Math.max(1, Math.round(sample.duration * 1e6 / state.timescale)),
-                        data: sample.data,
-                    }));
-                    state.sampleCount++;
-                } catch (err) {
-                    console.warn('Video sample decode failed', err);
+                state.sampleQueue.push(sample);
+            }
+            pumpSampleQueue(state);
+            // Speicher in MP4Box freigeben, sobald Samples in unserer Queue liegen
+            if (samples.length > 0) {
+                const lastSample = samples[samples.length - 1];
+                if (typeof mp4File.releaseUsedSamples === 'function') {
+                    try { mp4File.releaseUsedSamples(trackId, lastSample.number); } catch (_) {}
                 }
             }
         };
+
         state.reader = response.body.getReader();
         let fileStart = 0;
         while (!state.stopped) {
+            // Backpressure: Wenn schon genug Frames im Puffer warten, kurz pausieren mit dem Netzwerk-Lesen!
+            while (!state.stopped && (state.sampleQueue.length > 60 || state.frames.length > 20)) {
+                pumpSampleQueue(state);
+                await new Promise(r => setTimeout(r, 40));
+            }
+            if (state.stopped) break;
+
             const { value, done } = await state.reader.read();
             if (done) break;
             const buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
             buffer.fileStart = fileStart;
             fileStart += buffer.byteLength;
             mp4File.appendBuffer(buffer);
+            pumpSampleQueue(state);
         }
-        if (!state.stopped && state.decoder) {
+        if (!state.stopped && state.decoder && state.decoder.state === 'configured') {
+            pumpSampleQueue(state);
             try { await state.decoder.flush(); } catch (_) {}
             setStatus('STREAM ENDE', 'idle');
         }
     } catch (err) {
         if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
-    }
-}
-
-function startRenderingAndAudio(sid) {
-    void startHiddenWebAudio(sid, 0);
-    readyToRender = true;
-    lastFpsUpdate = performance.now();
-    fpsWindowStart = lastFpsUpdate;
-    requestAnimationFrame(renderFrame);
-}
-
-// ───────── WebSocket (ASCII Mode) ─────────
-function connectWs(sid) {
-    clearFrameBuffer();
-    canvasVideoMode = false;
-    lastCanvasFrameIndex = -1;
-    frameCount        = 0;
-    measuredFps       = 0;
-    fpsWindowFrames   = 0;
-    fpsWindowStart    = 0;
-    fpsBelowThreshold = false;
-    readyToRender     = false;
-    clockAnchored     = false;
-    lastPaintTime     = 0;
-    maxPaintInterval  = 0;
-    if (playbackControls) playbackControls.classList.add('hidden');
-
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => setStatus('BUFFERING', 'resolving');
-
-    ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-            if (event.data.startsWith('Error:')) {
-                setError(event.data.replace(/^Error:\s*/, ''));
-                closeWs();
-                return;
-            }
-            if (event.data.startsWith('CANVAS_INIT:')) {
-                wsRetryCount = 0;
-                const p = event.data.split(':');
-                targetFps = parseFloat(p[1]);
-                const width = parseInt(p[2], 10);
-                const height = parseInt(p[3], 10);
-                renderMode = 0;
-                pixelMode = false;
-                buildVideoCanvas(width, height);
-                setStatus('PLAYING · CANVAS', 'playing');
-                idleOverlay.classList.add('hidden');
-                startRenderingAndAudio(sid);
-                return;
-            } else if (event.data.startsWith('INIT:')) {
-                wsRetryCount = 0;
-                const p = event.data.split(':');
-                targetFps  = parseFloat(p[1]);
-                renderMode = parseInt(p[2]);
-                pixelMode  = (p.length > 5 && parseInt(p[5]) === 1);
-                canvasVideoMode = false;
-                buildCanvas(parseInt(p[3]), parseInt(p[4]));
-                setStatus('PLAYING · ASCII', 'playing');
-                idleOverlay.classList.add('hidden');
-                startRenderingAndAudio(sid);
-                return;
-            }
-            const nl  = event.data.indexOf('\n');
-            const idx = parseInt(event.data.substring(0, nl));
-            frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
-        } else {
-            const view = new DataView(event.data);
-            const idx  = view.getUint32(0, false);
-            frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
-        }
-        while (frameBuffer.length > FRAME_BUFFER_MAX) {
-            const dropped = frameBuffer.shift();
-            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
-        }
-    };
-
-    ws.onclose = (evt) => {
-        if (appState !== 'playing' || evt.code === 1000 || evt.code === 4003) {
-            if (appState === 'playing') {
-                setStatus('ENDED', 'idle');
-                finishPlayback();
-            }
-            return;
-        }
-        wsRetryCount++;
-        if (wsRetryCount > WS_MAX_RETRIES) {
-            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
-            finishPlayback();
-            return;
-        }
-        const delay = wsRetryCount * 1000;
-        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
-        wsRetryTimer = setTimeout(() => {
-            wsRetryTimer = null;
-            if (appState === 'playing' && sessionId === sid) connectWs(sid);
-        }, delay);
-    };
-
-    ws.onerror = () => {};
-}
-
-// ───────── Control API ─────────
-async function doPlay(resumeAtSec = 0) {
-    const params = new URLSearchParams(location.search);
-    const selection = params.get('selection');
-    const query = queryInput ? queryInput.value.trim() : '';
-    if (!selection && !query) { if (queryInput) queryInput.focus(); return; }
-
-    presetHint.classList.add('hidden');
-    stopCustomWebAudio();
-    stopPoll();
-    closeWs();
-    clearCanvas();
-
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
-
-    appState      = 'resolving';
-    currentPreset = selectedPreset;
-    setUiState('resolving');
-    setStatus('RESOLVING…', 'resolving');
-    statusTitle.textContent = selection ? 'ASCILINE' : query;
-    statusLive.classList.add('hidden');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
-
-    let resp, data;
-    try {
-        resp = await fetch('/api/play', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify(selection
-                ? { selection, preset: currentPreset, display_mode: selectedDisplayMode }
-                : { query, preset: currentPreset, display_mode: selectedDisplayMode }),
-        });
-        data = await resp.json();
-    } catch (err) {
-        setError('Network error — ' + err.message);
-        setUiState('idle');
-        return;
-    }
-    if (!resp.ok) {
-        setError(data.error || `Server error ${resp.status}`);
-        setUiState('idle');
-        return;
-    }
-
-    sessionId        = data.session_id;
-    appState         = 'playing';
-    mediaDurationSec = Number(data.duration) || 0;
-    mediaIsLive      = Boolean(data.is_live);
-    setUiState('playing');
-    updateTitle(data.title, data.is_live);
-
-    idleOverlay.classList.add('hidden');
-    if (selectedDisplayMode === 'canvas') {
-        startNativeCanvasMedia(
-            sessionId,
-            data.canvas_width,
-            data.canvas_height,
-            mediaDurationSec,
-            mediaIsLive,
-            Number(resumeAtSec) || 0
-        );
-    } else {
-        connectWs(sessionId);
-    }
-    startPoll();
-}
-
-async function doStop() {
-    stopCustomWebAudio();
-    stopPoll();
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
-    try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
-    closeWs();
-    finishPlayback();
-    setStatus('IDLE', 'idle');
-    statusTitle.textContent = '';
-    statusLive.classList.add('hidden');
-    presetHint.classList.add('hidden');
-}
-
-function startPoll() {
-    stopPoll();
-    pollTimer = setInterval(async () => {
-        if (appState !== 'playing') { stopPoll(); return; }
-        let data;
-        try {
-            const r = await fetch('/api/status');
-            data = await r.json();
-        } catch (_) { return; }
-        if (data.title) updateTitle(data.title, data.is_live);
-        if (data.duration && !mediaDurationSec) {
-            mediaDurationSec = Number(data.duration) || 0;
-        }
-        if (data.state === 'error') {
-            setError(data.error || 'Stream error');
-            closeWs();
-            finishPlayback();
-            stopPoll();
-        }
-    }, 2000);
-}
-
-function stopPoll() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-}
-
-function setUiState(state) {
-    if (btnPlay) btnPlay.disabled = false;
-    if (btnStop) btnStop.disabled = !(state === 'resolving' || state === 'playing');
-}
-
-function setStatus(label, stateClass) {
-    statusState.textContent = label;
-    statusState.className   = 'status-segment status-state';
-    if (stateClass) statusState.classList.add('state-' + stateClass);
-}
-
-function setError(msg) {
-    appState = 'error';
-    statusTitle.textContent = '⚠ ' + msg;
-    setStatus('ERROR', 'error');
-    statusLive.classList.add('hidden');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
-    setUiState('idle');
-    idleOverlay.classList.remove('hidden');
-}
-
-function updateTitle(title, isLive) {
-    if (title) statusTitle.textContent = title;
-    statusLive.classList.toggle('hidden', !isLive);
-}
-
-function finishPlayback() {
-    stopCustomWebAudio();
-    appState          = 'idle';
-    readyToRender     = false;
-    isPlaybackPaused  = false;
-    seekBaseSeconds   = 0;
-    clearFrameBuffer();
-    stopNativeCanvasSource();
-    clearCanvas();
-    idleOverlay.classList.remove('hidden');
-    if (playbackControls) playbackControls.classList.add('hidden');
-    setUiState('idle');
-    statusFps.textContent = '';
-    statusPerf.classList.add('hidden');
-    fpsBelowThreshold = false;
-}
-
-function clearCanvas() {
-    stopNativeCanvasSource();
-    canvasVideoMode = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.style.display      = 'none';
-    asciiPlayer.textContent   = '';
-    asciiPlayer.style.display = 'none';
-}
-
-function closeWs() {
-    if (!ws) return;
-    ws.onclose = null;
-    ws.onerror = null;
-    try { ws.close(); } catch (_) {}
-    ws = null;
-}
-
-const flushSelectionLayer = () => {
-    if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
-    asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
-};
-asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
-document.addEventListener('copy', flushSelectionLayer);
-
-if (btnPlay) btnPlay.addEventListener('click', () => { void doPlay(0); });
-if (btnStop) btnStop.addEventListener('click', doStop);
-
-window.addEventListener('resize', () => {
-    if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
-    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
-});
-
-// Split-page mode: /watch startet automatisch das ausgewählte Video
-if (location.pathname === '/watch') {
-    document.body.classList.add('watch-page');
-    const params = new URLSearchParams(location.search);
-    const selection = params.get('selection');
-    if (btnPlay) btnPlay.classList.add('hidden');
-    if (btnSearch) btnSearch.classList.add('hidden');
-    if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
-    if (btnStop) {
-        btnStop.classList.remove('hidden');
-        btnStop.addEventListener('click', () => { location.href = '/'; });
-    }
-    if (selection) {
-        window.setTimeout(() => { void doPlay(0); }, 0);
-    } else {
-        const arrow = document.getElementById('idle-arrow');
-        if (arrow) arrow.textContent = 'Kein Video ausgewählt – bitte zur Suche zurückkehren.';
     }
 }
