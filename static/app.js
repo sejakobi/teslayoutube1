@@ -1,5 +1,5 @@
 // ASCILINE YouTube streamer — Tesla browser frontend (Cleaned WebAudio & WebCodecs Canvas Edition).
-// Features: Infinite Scroll, Channel Search, Stealth Transport Controls, Audio/Video Sync, Tesla Fix
+// Features: Infinite Scroll, Channel Search, Stealth Transport Controls, Audio/Video Sync, Tesla Fix, Auto-Recovery
 
 'use strict';
 
@@ -56,6 +56,7 @@ let customAudioReader    = null;
 let activeAudioNodes     = [];
 let nextAudioTime        = 0;
 let firstAudioAnchorTime = null;
+let audioRetryTimer      = null;
 
 let appState             = 'idle'; // idle | resolving | playing | error
 let ws                   = null;
@@ -74,6 +75,12 @@ let seekBaseSeconds   = 0;
 let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
+
+// Auto-Recovery State (gegen Abbrüche bei Netzunterbrechungen oder Stream-Fehlern)
+const MEDIA_MAX_RETRIES = 12;
+let mediaRetryCount     = 0;
+let mediaRetryTimer     = null;
+let lastKnownPosition   = 0;
 
 // Search State
 const STORAGE_KEY     = 'asciline_search_state_v1';
@@ -113,6 +120,75 @@ let fpsWindowStart    = 0;
 let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
+
+// ───────── Auto-Recovery Helpers ─────────
+function clearRecoveryTimers() {
+    if (mediaRetryTimer !== null) {
+        clearTimeout(mediaRetryTimer);
+        mediaRetryTimer = null;
+    }
+    if (audioRetryTimer !== null) {
+        clearTimeout(audioRetryTimer);
+        audioRetryTimer = null;
+    }
+}
+
+function getCurrentPlaybackSecond() {
+    if (webCodecsState && Number.isFinite(webCodecsState.lastPresentedTime) && webCodecsState.lastPresentedTime > 0) {
+        lastKnownPosition = seekBaseSeconds + webCodecsState.lastPresentedTime;
+    }
+    return Math.max(0, lastKnownPosition || seekBaseSeconds || 0);
+}
+
+function scheduleMediaRecovery(reason, forceNewSession = false) {
+    if (appState !== 'playing' && appState !== 'resolving') return;
+    if (mediaRetryTimer !== null) return; // Bereits ein Reconnect geplant
+
+    const resumeSec = getCurrentPlaybackSecond();
+
+    // Wenn wir bereits ganz am Ende des Videos sind, normal beenden statt Reconnect
+    if (!mediaIsLive && mediaDurationSec > 0 && resumeSec >= mediaDurationSec - 2) {
+        setStatus('STREAM ENDE', 'idle');
+        return;
+    }
+
+    mediaRetryCount++;
+    if (mediaRetryCount > MEDIA_MAX_RETRIES) {
+        setError(`Verbindung nach ${MEDIA_MAX_RETRIES} Versuchen abgebrochen (${reason}). Klicke auf das Bild zum Fortsetzen.`);
+        return;
+    }
+
+    const delayMs = Math.min(5000, 1000 + (mediaRetryCount - 1) * 750);
+    console.warn(`[Auto-Recovery] ${reason} — Versuch ${mediaRetryCount}/${MEDIA_MAX_RETRIES} in ${delayMs}ms ab Sekunde ${resumeSec.toFixed(1)}`);
+    setStatus(`RECONNECTING (${mediaRetryCount}/${MEDIA_MAX_RETRIES})…`, 'resolving');
+    if (statusPerf) {
+        statusPerf.textContent = `Verbindung wird wiederhergestellt (${reason})…`;
+        statusPerf.classList.remove('hidden');
+    }
+
+    // Aktuellen Stream sauber anhalten, aber das letzte Bild auf dem Canvas stehen lassen!
+    stopNativeCanvasSource();
+    stopCustomWebAudio();
+
+    mediaRetryTimer = setTimeout(() => {
+        mediaRetryTimer = null;
+        if (appState !== 'playing' && appState !== 'resolving') return;
+
+        if (forceNewSession || !sessionId) {
+            void doPlay(resumeSec, null, true);
+        } else {
+            void startNativeCanvasMedia(
+                sessionId,
+                canvas.width || 640,
+                canvas.height || 360,
+                mediaDurationSec,
+                mediaIsLive,
+                resumeSec,
+                true
+            );
+        }
+    }, delayMs);
+}
 
 // ───────── Search & Infinite Scroll Logic ─────────
 function saveSearchState() {
@@ -377,7 +453,7 @@ function formatPlaybackTime(seconds) {
 
 function updatePlaybackControlsUI(currentSec) {
     if (!playbackControls) return;
-    const show = appState === 'playing' && canvasVideoMode;
+    const show = (appState === 'playing' || appState === 'resolving') && canvasVideoMode;
     playbackControls.classList.toggle('hidden', !show);
     if (!show) return;
 
@@ -422,16 +498,20 @@ async function toggleCustomPause() {
         }
         setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
     }
-    updatePlaybackControlsUI(seekBaseSeconds + (webCodecsState.lastPresentedTime || 0));
+    updatePlaybackControlsUI(getCurrentPlaybackSecond());
 }
 
 function seekCustomCanvas(targetSeconds) {
-    if (appState !== 'playing' || !canvasVideoMode || !sessionId || mediaIsLive || !(mediaDurationSec > 0)) return;
+    if ((appState !== 'playing' && appState !== 'error') || !canvasVideoMode || !sessionId || mediaIsLive || !(mediaDurationSec > 0)) return;
+    clearRecoveryTimers();
+    mediaRetryCount = 0;
+    appState = 'playing';
     const clamped = Math.max(0, Math.min(mediaDurationSec - 1, Number(targetSeconds) || 0));
     seekBaseSeconds = clamped;
+    lastKnownPosition = clamped;
     isPlaybackPaused = false;
     updatePlaybackControlsUI(clamped);
-    startNativeCanvasMedia(sessionId, canvas.width || 640, canvas.height || 360, mediaDurationSec, mediaIsLive, clamped);
+    void startNativeCanvasMedia(sessionId, canvas.width || 640, canvas.height || 360, mediaDurationSec, mediaIsLive, clamped, true);
 }
 
 if (btnPause) {
@@ -460,8 +540,10 @@ presetBtns.forEach(btn => {
         if (p === selectedPreset) return;
         selectedPreset = p;
         presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === p));
-        if (appState === 'playing' && sessionId) {
-            void doPlay(seekBaseSeconds + (webCodecsState ? webCodecsState.lastPresentedTime : 0));
+        if ((appState === 'playing' || appState === 'error') && sessionId) {
+            clearRecoveryTimers();
+            mediaRetryCount = 0;
+            void doPlay(getCurrentPlaybackSecond(), null, true);
         } else {
             updateConfigHint();
         }
@@ -512,8 +594,12 @@ function updateMuteBtn() {
     }
 }
 
-// ───────── Unsichtbares Web-Audio (Ohne HTML-Tags) ─────────
+// ───────── Unsichtbares Web-Audio (Mit Auto-Reconnect) ─────────
 function stopCustomWebAudio() {
+    if (audioRetryTimer !== null) {
+        clearTimeout(audioRetryTimer);
+        audioRetryTimer = null;
+    }
     if (customAudioReader) {
         try { customAudioReader.cancel(); } catch (_) {}
         customAudioReader = null;
@@ -544,11 +630,12 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         await audioContext.resume().catch(() => {});
     }
 
+    let reader = null;
     try {
         const url = `/audio?session=${encodeURIComponent(sid)}&start=${encodeURIComponent(startSec.toFixed(3))}&_=${Date.now()}`;
         const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok || !res.body) return;
-        const reader = res.body.getReader();
+        if (!res.ok || !res.body) throw new Error(`Audio HTTP ${res.status}`);
+        reader = res.body.getReader();
         customAudioReader = reader;
         nextAudioTime = audioContext.currentTime + 0.12;
 
@@ -590,8 +677,29 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                 nextAudioTime += audioBuffer.duration;
             }).catch(() => {});
         }
+
+        // Falls der Audio-Stream vorzeitig endet, während das Video noch läuft -> Audio neu verbinden!
+        if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
+            const curSec = getCurrentPlaybackSecond();
+            if (mediaIsLive || !(mediaDurationSec > 0) || curSec < mediaDurationSec - 4) {
+                audioRetryTimer = setTimeout(() => {
+                    audioRetryTimer = null;
+                    if (appState === 'playing' && sessionId === sid) {
+                        void startHiddenWebAudio(sid, getCurrentPlaybackSecond());
+                    }
+                }, 1500);
+            }
+        }
     } catch (e) {
-        console.warn('WebAudio Stream beendet:', e);
+        console.warn('WebAudio Stream unterbrochen, starte Reconnect:', e);
+        if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
+            audioRetryTimer = setTimeout(() => {
+                audioRetryTimer = null;
+                if (appState === 'playing' && sessionId === sid) {
+                    void startHiddenWebAudio(sid, getCurrentPlaybackSecond());
+                }
+            }, 1500);
+        }
     }
 }
 
@@ -661,13 +769,15 @@ function buildCanvas(cols, rows) {
     for (let r = 0; r < rows; r++) yPos[r] = r * charHeight;
 }
 
-function buildVideoCanvas(width, height) {
+function buildVideoCanvas(width, height, preserveDimensions = false) {
     canvasVideoMode = true;
     pixelMode = false;
     gridCols = 0;
     gridRows = 0;
-    canvas.width = width;
-    canvas.height = height;
+    if (!preserveDimensions || !canvas.width || !canvas.height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
     canvas.style.display = 'block';
     canvas.style.imageRendering = 'auto';
     canvas.style.position = 'absolute';
@@ -739,7 +849,6 @@ function pumpSampleQueue(state) {
     if (!state || state.stopped || !state.decoderConfigured || !state.decoder) return;
     if (state.decoder.state !== 'configured') return;
 
-    // Maximal 8 Frames gleichzeitig im Decoder/Speicher halten (verhindert Tesla-Hardware-Decoder-Deadlock)
     while (
         state.sampleQueue.length > 0 &&
         (state.frames.length + state.decoder.decodeQueueSize) < 8
@@ -773,7 +882,6 @@ function pumpSampleQueue(state) {
 function startWebCodecsDrawLoop(state) {
     if (state.raf || state.stopped) return;
 
-    // 16ms Intervall (~60 Hz Abtastung) für flüssiges Zeichnen im Tesla & am PC
     state.raf = setInterval(() => {
         const now = performance.now();
         if (state.stopped || webCodecsState !== state || appState !== 'playing') {
@@ -789,25 +897,22 @@ function startWebCodecsDrawLoop(state) {
             }
             let videoClock = (now - state.playbackStart) / 1000;
 
-            // Sanfte Audio-Sync-Korrektur (ohne harte Sprünge)
             if (audioContext && audioContext.state === 'running' && firstAudioAnchorTime !== null) {
                 const audioClock = audioContext.currentTime - firstAudioAnchorTime;
                 if (audioClock > 0.5) {
                     const syncDiff = videoClock - audioClock;
                     if (Math.abs(syncDiff) > 0.25 && Math.abs(syncDiff) < 3.0) {
-                        state.playbackStart += syncDiff * 50; // Sanftes Nachführen (5%)
+                        state.playbackStart += syncDiff * 50;
                         videoClock = (now - state.playbackStart) / 1000;
                     }
                 }
             }
 
-            // Überfällige Frames überspringen, falls der Browser kurz gehangen hat
             while (state.frames.length > 1 && (state.frames[1].timestamp / 1e6) <= videoClock + 0.015) {
                 const older = state.frames.shift();
                 try { older.close(); } catch (_) {}
             }
 
-            // Frame zeichnen, sobald seine Zeit erreicht ist (oder sofort beim allerersten Frame)
             if (state.frames.length > 0 && (state.drawn === 0 || (state.frames[0].timestamp / 1e6) <= videoClock + 0.035)) {
                 const frame = state.frames.shift();
                 try {
@@ -821,14 +926,21 @@ function startWebCodecsDrawLoop(state) {
                     canvas.style.display = 'block';
                     ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
                     state.drawn++;
+                    state.totalDrawn++;
                     state.lastPresentedTime = frame.timestamp / 1e6;
-                    updatePlaybackControlsUI(seekBaseSeconds + state.lastPresentedTime);
+                    lastKnownPosition = seekBaseSeconds + state.lastPresentedTime;
+                    updatePlaybackControlsUI(lastKnownPosition);
+
+                    // Sobald der Stream wieder stabil 25 Frames gezeichnet hat -> Fehlerzähler zurücksetzen!
+                    if (state.totalDrawn >= 25 && mediaRetryCount > 0) {
+                        mediaRetryCount = 0;
+                        if (statusPerf) statusPerf.classList.add('hidden');
+                    }
                 } catch (err) {
                     console.warn('WebCodecs canvas paint failed', err);
                 } finally {
                     try { frame.close(); } catch (_) {}
                 }
-                // Sofort nächsten Frame im Decoder nachschieben
                 pumpSampleQueue(state);
             }
 
@@ -843,15 +955,17 @@ function startWebCodecsDrawLoop(state) {
     }, 16);
 }
 
-async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durationSeconds = 0, isLive = false, startSec = 0) {
+async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durationSeconds = 0, isLive = false, startSec = 0, isRecovery = false) {
+    clearRecoveryTimers();
     canvasVideoMode = true;
     targetFps = 30;
     mediaDurationSec = Number(durationSeconds) || mediaDurationSec || 0;
     mediaIsLive = Boolean(isLive);
     seekBaseSeconds = Number(startSec) || 0;
+    lastKnownPosition = seekBaseSeconds;
     isPlaybackPaused = false;
 
-    buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360);
+    buildVideoCanvas(fallbackWidth || 640, fallbackHeight || 360, isRecovery);
     if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window) || !window.MP4Box) {
         setError('Browser unterstützt WebCodecs nicht.');
         return;
@@ -869,6 +983,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         gotFirstKeyframe: false,
         playbackStart: null,
         drawn: 0,
+        totalDrawn: 0,
         fpsStart: 0,
         lastPresentedTime: 0,
         started: false,
@@ -879,8 +994,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         decoderConfigured: false,
     };
     webCodecsState = state;
-    setStatus('BUFFERING · WEBCODECS', 'resolving');
-    if (statusPerf) statusPerf.classList.add('hidden');
+    if (!isRecovery) {
+        setStatus('BUFFERING · WEBCODECS', 'resolving');
+        if (statusPerf) statusPerf.classList.add('hidden');
+    }
     updatePlaybackControlsUI(seekBaseSeconds);
 
     void startHiddenWebAudio(sid, seekBaseSeconds);
@@ -888,18 +1005,25 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     try {
         const mediaUrl = `/media?session=${encodeURIComponent(sid)}&start=${encodeURIComponent(seekBaseSeconds.toFixed(3))}&_=${Date.now()}`;
         const response = await fetch(mediaUrl, { cache: 'no-store' });
-        if (!response.ok || !response.body) throw new Error(`Videostream HTTP ${response.status}`);
+        if (!response.ok || !response.body) {
+            // Bei 404 ist die Session auf dem Server abgelaufen -> Neue Session anfordern!
+            const needNewSession = response.status === 404 || response.status === 409;
+            scheduleMediaRecovery(`HTTP ${response.status}`, needNewSession);
+            return;
+        }
 
         const mp4File = MP4Box.createFile();
         state.file = mp4File;
         mp4File.onError = (message) => {
-            if (!state.stopped) setError(`MP4 Fehler: ${message}`);
+            if (!state.stopped) {
+                scheduleMediaRecovery(`MP4-Stream (${message})`, false);
+            }
         };
         mp4File.onReady = (info) => {
             if (state.stopped || webCodecsState !== state) return;
             const track = (info.videoTracks || [])[0];
             if (!track) {
-                setError('Keine Videospur gefunden.');
+                scheduleMediaRecovery('Keine Videospur', true);
                 return;
             }
             state.track = track;
@@ -921,7 +1045,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
 
             support.then((result) => {
                 if (state.stopped || webCodecsState !== state) return;
-                if (!result.supported) throw new Error(`Codec nicht unterstützt: ${config.codec}`);
+                if (!result.supported) {
+                    scheduleMediaRecovery(`Codec (${config.codec})`, true);
+                    return;
+                }
 
                 state.decoder = new VideoDecoder({
                     output(frame) {
@@ -933,6 +1060,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                         state.frames.sort((a, b) => a.timestamp - b.timestamp);
                         if (!state.started) {
                             state.started = true;
+                            appState = 'playing';
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (idleOverlay) idleOverlay.classList.add('hidden');
                             canvas.style.display = 'block';
@@ -941,8 +1069,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                         }
                     },
                     error(error) {
-                        console.error('VideoDecoder error:', error);
-                        if (!state.stopped) setError(`VideoDecoder: ${error.message || error}`);
+                        console.warn('VideoDecoder error, triggering auto-recovery:', error);
+                        if (!state.stopped && webCodecsState === state) {
+                            scheduleMediaRecovery('Decoder-Resync', false);
+                        }
                     },
                 });
 
@@ -952,7 +1082,9 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                 mp4File.start();
                 pumpSampleQueue(state);
             }).catch((err) => {
-                if (!state.stopped) setError(`WebCodecs-Konfiguration fehlgeschlagen: ${err.message || err}`);
+                if (!state.stopped) {
+                    scheduleMediaRecovery(`WebCodecs (${err.message || err})`, false);
+                }
             });
         };
 
@@ -960,7 +1092,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             if (state.stopped || webCodecsState !== state) return;
             for (const sample of samples) {
                 if (!sample || !sample.data || !sample.data.byteLength) continue;
-                // WICHTIG: Daten kopieren BEVOR releaseUsedSamples sie in MP4Box auf null setzt!
                 const copy = new Uint8Array(sample.data.byteLength);
                 copy.set(new Uint8Array(sample.data.buffer, sample.data.byteOffset, sample.data.byteLength));
                 state.sampleQueue.push({
@@ -980,7 +1111,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         state.reader = response.body.getReader();
         let fileStart = 0;
         while (!state.stopped) {
-            // Netzwerk-Backpressure: Pausiert das Nachladen, solange genug Samples in der Queue liegen
             while (!state.stopped && state.sampleQueue.length > 90) {
                 pumpSampleQueue(state);
                 await new Promise(r => setTimeout(r, 35));
@@ -995,18 +1125,39 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             mp4File.appendBuffer(buffer);
             pumpSampleQueue(state);
         }
-        if (!state.stopped && state.decoder && state.decoder.state === 'configured') {
-            pumpSampleQueue(state);
-            try { await state.decoder.flush(); } catch (_) {}
+
+        if (!state.stopped && webCodecsState === state) {
+            // Warte kurz, bis die restlichen gepufferten Samples gezeichnet wurden
+            let waitLoops = 0;
+            while (!state.stopped && (state.sampleQueue.length > 0 || state.frames.length > 0) && waitLoops < 60) {
+                pumpSampleQueue(state);
+                await new Promise(r => setTimeout(r, 50));
+                waitLoops++;
+            }
+            if (state.stopped || webCodecsState !== state) return;
+
+            const reachedSec = getCurrentPlaybackSecond();
+            const isPrematureDrop = mediaIsLive || !state.started || (mediaDurationSec > 0 && reachedSec < mediaDurationSec - 5);
+
+            if (isPrematureDrop) {
+                scheduleMediaRecovery('Stream-Unterbrechung', false);
+                return;
+            }
+
+            if (state.decoder && state.decoder.state === 'configured') {
+                try { await state.decoder.flush(); } catch (_) {}
+            }
             setStatus('STREAM ENDE', 'idle');
         }
     } catch (err) {
-        if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
+        if (!state.stopped && webCodecsState === state) {
+            scheduleMediaRecovery(`Netzwerk (${err.message || 'Stream'})`, false);
+        }
     }
 }
 
-// ───────── Control API (Wiederhergestellt!) ─────────
-async function doPlay(resumeAtSec = 0, directSelection = null) {
+// ───────── Control API ─────────
+async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = false) {
     const params = new URLSearchParams(location.search);
     const selection = directSelection || params.get('selection');
     const query = (queryInput && queryInput.value) ? queryInput.value.trim() : '';
@@ -1015,11 +1166,22 @@ async function doPlay(resumeAtSec = 0, directSelection = null) {
         return;
     }
 
+    clearRecoveryTimers();
+    if (!isRecovery) {
+        mediaRetryCount = 0;
+        lastKnownPosition = Number(resumeAtSec) || 0;
+    }
+
     if (presetHint) presetHint.classList.add('hidden');
     stopCustomWebAudio();
     stopPoll();
     closeWs();
-    clearCanvas();
+
+    if (!isRecovery) {
+        clearCanvas();
+    } else {
+        stopNativeCanvasSource();
+    }
 
     wsRetryCount = 0;
     if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
@@ -1027,11 +1189,11 @@ async function doPlay(resumeAtSec = 0, directSelection = null) {
     appState      = 'resolving';
     currentPreset = selectedPreset;
     setUiState('resolving');
-    setStatus('RESOLVING…', 'resolving');
-    if (statusTitle) statusTitle.textContent = selection ? 'ASCILINE' : query;
-    if (statusLive) statusLive.classList.add('hidden');
-    if (statusFps) statusFps.textContent = '';
-    if (statusPerf) statusPerf.classList.add('hidden');
+    setStatus(isRecovery ? `RECONNECTING (${mediaRetryCount}/${MEDIA_MAX_RETRIES})…` : 'RESOLVING…', 'resolving');
+    if (statusTitle && !isRecovery) statusTitle.textContent = selection ? 'ASCILINE' : query;
+    if (statusLive && !isRecovery) statusLive.classList.add('hidden');
+    if (statusFps && !isRecovery) statusFps.textContent = '';
+    if (statusPerf && !isRecovery) statusPerf.classList.add('hidden');
 
     let resp, data;
     try {
@@ -1044,11 +1206,19 @@ async function doPlay(resumeAtSec = 0, directSelection = null) {
         });
         data = await resp.json();
     } catch (err) {
+        if (appState === 'resolving' || appState === 'playing') {
+            scheduleMediaRecovery('Server nicht erreichbar', true);
+            return;
+        }
         setError('Network error — ' + err.message);
         setUiState('idle');
         return;
     }
     if (!resp.ok) {
+        if (isRecovery && mediaRetryCount < MEDIA_MAX_RETRIES) {
+            scheduleMediaRecovery(`Server HTTP ${resp.status}`, true);
+            return;
+        }
         setError(data.error || `Server error ${resp.status}`);
         setUiState('idle');
         return;
@@ -1056,20 +1226,21 @@ async function doPlay(resumeAtSec = 0, directSelection = null) {
 
     sessionId        = data.session_id;
     appState         = 'playing';
-    mediaDurationSec = Number(data.duration) || 0;
+    mediaDurationSec = Number(data.duration) || mediaDurationSec || 0;
     mediaIsLive      = Boolean(data.is_live);
     setUiState('playing');
     updateTitle(data.title, data.is_live);
 
     if (idleOverlay) idleOverlay.classList.add('hidden');
     if (selectedDisplayMode === 'canvas' || selection) {
-        startNativeCanvasMedia(
+        void startNativeCanvasMedia(
             sessionId,
             data.canvas_width,
             data.canvas_height,
             mediaDurationSec,
             mediaIsLive,
-            Number(resumeAtSec) || 0
+            Number(resumeAtSec) || 0,
+            isRecovery
         );
     } else {
         connectWs(sessionId);
@@ -1078,6 +1249,9 @@ async function doPlay(resumeAtSec = 0, directSelection = null) {
 }
 
 async function doStop() {
+    clearRecoveryTimers();
+    mediaRetryCount = 0;
+    lastKnownPosition = 0;
     stopCustomWebAudio();
     stopPoll();
     wsRetryCount = 0;
@@ -1099,18 +1273,19 @@ function startPoll() {
         try {
             const r = await fetch('/api/status');
             data = await r.json();
-        } catch (_) { return; }
+        } catch (_) {
+            // Kurze Netzunterbrechung beim Status-Poll ignorieren
+            return;
+        }
         if (data.title) updateTitle(data.title, data.is_live);
         if (data.duration && !mediaDurationSec) {
             mediaDurationSec = Number(data.duration) || 0;
         }
         if (data.state === 'error') {
-            setError(data.error || 'Stream error');
-            closeWs();
-            finishPlayback();
-            stopPoll();
+            // Nicht hart abbrechen, sondern automatisch ab der letzten Sekunde neu verbinden!
+            scheduleMediaRecovery(data.error || 'Session-Resync', true);
         }
-    }, 2000);
+    }, 3000);
 }
 
 function stopPoll() {
@@ -1131,6 +1306,7 @@ function setStatus(label, stateClass) {
 }
 
 function setError(msg) {
+    clearRecoveryTimers();
     appState = 'error';
     if (statusTitle) statusTitle.textContent = '⚠ ' + msg;
     setStatus('ERROR', 'error');
@@ -1138,7 +1314,10 @@ function setError(msg) {
     if (statusFps) statusFps.textContent = '';
     if (statusPerf) statusPerf.classList.add('hidden');
     setUiState('idle');
-    if (idleOverlay) idleOverlay.classList.remove('hidden');
+    // Falls noch kein einziges Bild gezeichnet wurde, zeige das Idle-Overlay
+    if (idleOverlay && (!webCodecsState || !webCodecsState.started)) {
+        idleOverlay.classList.remove('hidden');
+    }
 }
 
 function updateTitle(title, isLive) {
@@ -1147,11 +1326,13 @@ function updateTitle(title, isLive) {
 }
 
 function finishPlayback() {
+    clearRecoveryTimers();
     stopCustomWebAudio();
     appState          = 'idle';
     readyToRender     = false;
     isPlaybackPaused  = false;
     seekBaseSeconds   = 0;
+    lastKnownPosition = 0;
     clearFrameBuffer();
     stopNativeCanvasSource();
     clearCanvas();
@@ -1382,6 +1563,13 @@ window.addEventListener('resize', () => {
 });
 
 canvas.addEventListener('click', () => {
+    // Falls nach 12 Fehlversuchen doch mal in den Error-State gewechselt wurde: Klick setzt sofort fort!
+    if (appState === 'error' && canvasVideoMode) {
+        mediaRetryCount = 0;
+        appState = 'playing';
+        void doPlay(getCurrentPlaybackSecond(), null, true);
+        return;
+    }
     if (appState === 'playing' && canvasVideoMode) {
         if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
             audioContext.resume().catch(() => {});
@@ -1389,6 +1577,19 @@ canvas.addEventListener('click', () => {
             return;
         }
         void toggleCustomPause();
+    }
+});
+
+// Wenn das Fahrzeug/Browser die Netzwerkverbindung wiederherstellt, sofort Reconnect anstoßen
+window.addEventListener('online', () => {
+    if ((appState === 'playing' || appState === 'error') && canvasVideoMode) {
+        mediaRetryCount = 0;
+        if (mediaRetryTimer !== null) {
+            clearTimeout(mediaRetryTimer);
+            mediaRetryTimer = null;
+        }
+        appState = 'playing';
+        scheduleMediaRecovery('Netzwerk wieder da', false);
     }
 });
 
