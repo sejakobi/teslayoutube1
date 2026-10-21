@@ -65,7 +65,7 @@
   white-space: nowrap !important;
 }
 .watch-page #brand::before {
-  content: "A" !important;
+  content: "CP" !important;
   display: inline-grid !important;
   place-items: center !important;
   width: 34px !important;
@@ -80,7 +80,7 @@
   box-shadow: 0 5px 16px rgba(228,74,79,.18) !important;
 }
 .watch-page #brand::after {
-  content: "MEDIA" !important;
+  content: "PREMIUM" !important;
   align-self: center !important;
   margin-left: 2px !important;
   padding: 5px 7px !important;
@@ -146,8 +146,8 @@
   letter-spacing: .12em !important;
   white-space: nowrap !important;
 }
-.watch-page #preset-group::before { content: "QUALITÄT" !important; }
-.watch-page #display-mode-group::before { content: "ANSICHT" !important; }
+.watch-page #preset-group::before { content: "" !important; }
+.watch-page #display-mode-group::before { content: "" !important; }
 .watch-page .preset-btn,
 .watch-page .display-mode-btn {
   display: inline-flex !important;
