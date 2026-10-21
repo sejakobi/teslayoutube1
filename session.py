@@ -42,17 +42,11 @@ class Session:
     media: Optional[ResolvedMedia] = None
     pipeline: Optional[VideoPipeline] = None
     audio_pipeline: Optional[AudioPipeline] = None
-    # Set when the session is superseded or stopped.
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class SessionManager:
-    """Single-session lifecycle manager.
-
-    All methods are called from asyncio tasks on a single event loop.
-    Pipeline stop() calls are dispatched as background tasks so the state
-    machine never blocks waiting for ffmpeg to exit.
-    """
+    """Single-session lifecycle manager."""
 
     def __init__(self, max_source_height: int = SERVER_DEFAULTS["max_source_height"]):
         self._max_height = max_source_height
@@ -60,12 +54,6 @@ class SessionManager:
         self._lock = asyncio.Lock()
 
     async def play(self, query: str, preset_name: str, display_mode: str = "ascii") -> Session:
-        """Start a new session.
-
-        Kills the previous session, resolves the query, starts the
-        pipeline, returns a Session with state=PLAYING.  Raises
-        ResolverError if resolution fails (state set to ERROR first).
-        """
         async with self._lock:
             await self._kill_current()
 
@@ -79,9 +67,6 @@ class SessionManager:
             self._current = session
             log.info("session %s: resolving %r preset=%s", session_id, query, preset_name)
 
-        # Resolve outside the lock so a hammered Play can supersede us.
-        # Native Canvas playback uses browser-compatible H.264/AAC media and
-        # lets the browser decode frames; keep the existing ASCII selection.
         requested_height = self._max_height
         if session.display_mode == "canvas":
             canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
@@ -91,9 +76,7 @@ class SessionManager:
                 resolve,
                 query,
                 requested_height,
-                # Canvas mode uses browser-native fragmented MP4. Prefer H.264/AAC
-                # formats when available instead of selecting AV1/VP9 by default.
-                prefer_native=False,
+                prefer_native=(session.display_mode == "canvas"),
             )
         except ResolverError as exc:
             async with self._lock:
@@ -118,43 +101,19 @@ class SessionManager:
                 mode=preset_cfg["mode"],
             )
 
-            if session.display_mode == "canvas":
-                canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
-                pipeline = VideoPipeline(
-                    media.video_url,
-                    preset,
-                    headers=media.video_headers,
-                    display_mode="canvas",
-                    frame_width=int(canvas_cfg["width"]),
-                    frame_height=int(canvas_cfg["height"]),
-                    fps_cap=int(canvas_cfg["fps_cap"]),
-                    jpeg_quality=int(canvas_cfg.get("jpeg_quality", 75)),
-                )
-            else:
+            if session.display_mode == "ascii":
                 pipeline = VideoPipeline(
                     media.video_url,
                     preset,
                     headers=media.video_headers,
                     display_mode="ascii",
                 )
-            # Canvas now consumes the fragmented-MP4 endpoint and decodes video
-            # in the browser with WebCodecs; do not also run the JPEG/WebSocket
-            # pipeline in parallel. ASCII mode keeps the legacy pipeline.
-            if session.display_mode == "ascii":
                 pipeline.start()
-            else:
-                pipeline = None
 
-            # Keep the separate audio endpoint for broad desktop compatibility.
             audio_src = media.audio_url if media.audio_url else media.video_url
             audio_headers = media.audio_headers if media.audio_url else media.video_headers
             audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
             audio_pipeline.start()
-            if session.display_mode == "canvas":
-                log.info(
-                    "session %s: WebCodecs Canvas selected %dx%d; fragmented MP4 + separate audio started",
-                    session_id, int(canvas_cfg["width"]), int(canvas_cfg["height"]),
-                )
 
             session.media = media
             session.pipeline = pipeline
@@ -162,8 +121,8 @@ class SessionManager:
             session.state = State.PLAYING
 
             log.info(
-                "session %s: playing %r is_live=%s title=%r",
-                session_id, query, media.is_live, media.title,
+                "session %s: playing %r is_live=%s duration=%s title=%r",
+                session_id, query, media.is_live, media.duration, media.title,
             )
 
         return session
@@ -198,16 +157,13 @@ class SessionManager:
         if sess.media:
             result["title"] = sess.media.title
             result["is_live"] = sess.media.is_live
+            result["duration"] = sess.media.duration or 0
         else:
             result["title"] = None
+            result["duration"] = 0
         return result
 
     async def _kill_current(self) -> None:
-        """Signal the current session to stop and dispatch teardown.
-
-        Must be called with self._lock held.  Returns immediately; the
-        teardown task runs concurrently so callers are not delayed.
-        """
         sess = self._current
         if sess is None:
             return
@@ -223,11 +179,6 @@ class SessionManager:
         self._current = None
 
     def stop_sync(self) -> None:
-        """Synchronous teardown for atexit / signal handlers.
-
-        Sends SIGTERM to both pipelines first, then waits on each, so the
-        worst-case time is max(video_wait, audio_wait), not their sum.
-        """
         sess = self._current
         if sess is None:
             return
@@ -238,7 +189,6 @@ class SessionManager:
         sess.audio_pipeline = None
 
         if pipeline is not None:
-            log.info("atexit: terminating session %s video pipeline", sess.session_id)
             pipeline._stop.set()
             proc = pipeline._proc
             if proc and proc.poll() is None:
@@ -247,7 +197,6 @@ class SessionManager:
                 except Exception:
                     pass
         if audio_pipeline is not None:
-            log.info("atexit: terminating session %s audio pipeline", sess.session_id)
             audio_pipeline._stop.set()
             aproc = audio_pipeline._proc
             if aproc and aproc.poll() is None:
@@ -275,22 +224,16 @@ class SessionManager:
                     audio_pipeline._proc.wait(timeout=2)
                 except Exception:
                     pass
-        log.info("atexit: both pipelines stopped")
 
 
 async def _stop_pipeline(pipeline: VideoPipeline, session_id: str) -> None:
-    log.info("session %s: tearing down pipeline in background", session_id)
     await asyncio.to_thread(pipeline.stop)
-    log.info("session %s: pipeline torn down", session_id)
 
 
 async def _stop_audio_pipeline(pipeline: AudioPipeline, session_id: str) -> None:
-    log.info("session %s: tearing down audio pipeline in background", session_id)
     await asyncio.to_thread(pipeline.stop)
-    log.info("session %s: audio pipeline torn down", session_id)
 
 
-# Module-level singleton: server.py imports it; signal handlers register here.
 _manager: Optional[SessionManager] = None
 
 
@@ -313,7 +256,6 @@ def _atexit_cleanup() -> None:
 
 def _signal_handler(signum: int, frame) -> None:
     import os
-    log.info("received signal %d — stopping pipeline before exit", signum)
     if _manager is not None:
         _manager.stop_sync()
     signal.signal(signum, signal.SIG_DFL)
