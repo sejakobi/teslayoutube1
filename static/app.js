@@ -383,81 +383,66 @@ function getMp4VideoDescription(mp4File, track) {
 }
 
 function startWebCodecsDrawLoop(state) {
+
     if (state.raf || state.stopped) return;
+
     const draw = (now) => {
+
         state.raf = 0;
+
         if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
 
-        // Füttere den Decoder mit neuem Material aus der Sample-Queue
-        if (typeof pumpSampleQueue === 'function') {
-            pumpSampleQueue(state);
+        if (state.playbackStart === null && state.frames.length) {
+
+            state.playbackStart = now - (state.frames[0].timestamp / 1000);
+
         }
 
-        if (!isPlaybackPaused) {
-            if (state.playbackStart === null && state.frames.length) {
-                state.playbackStart = now - (state.frames[0].timestamp / 1000);
-            }
-            let videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+        const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
 
-            // --- AUDIO-SYNC KORREKTUR ---
-            // Wenn der WebAudio-Kontext läuft, synchronisieren wir das Video sanft auf den Audiotakt
-            if (audioContext && audioContext.state === 'running' && nextAudioTime > 0) {
-                const estimatedAudioTime = (audioContext.currentTime - (nextAudioTime - (state.lastPresentedTime || 0)));
-                const syncDiff = videoClock - estimatedAudioTime;
-                // Wenn die Abweichung größer als 150 ms ist, korrigieren wir die Video-Uhr fließend
-                if (Math.abs(syncDiff) > 0.15) {
-                    state.playbackStart += syncDiff * 1000;
-                    videoClock = (now - state.playbackStart) / 1000;
-                }
-            }
+        while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
 
-            const firstFrameSec = state.frames.length > 0 ? state.frames[0].timestamp / 1e6 : 0;
-            if (state.frames.length > 0 && Math.abs(firstFrameSec - videoClock) > 1.5) {
-                state.playbackStart = now - (state.frames[0].timestamp / 1000);
-            }
-            const adjustedClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+            const older = state.frames.shift();
 
-            // Zu alte Frames verwerfen
-            while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= adjustedClock + 0.02) {
-                const older = state.frames.shift();
-                try { older.close(); } catch (_) {}
-            }
+            try { older.close(); } catch (_) {}
 
-            // Aktuellen Frame zum richtigen Zeitpunkt zeichnen
-            if (state.frames.length > 0 && (state.drawn === 0 || state.frames[0].timestamp / 1e6 <= adjustedClock + 0.05)) {
-                const frame = state.frames.shift();
-                try {
-                    const fw = frame.displayWidth || frame.codedWidth || 640;
-                    const fh = frame.displayHeight || frame.codedHeight || 360;
-                    if (canvas.width !== fw || canvas.height !== fh) {
-                        canvas.width = fw;
-                        canvas.height = fh;
-                        layoutVideoCanvas();
-                    }
-                    canvas.style.display = 'block';
-                    ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-                    state.drawn++;
-                    state.lastPresentedTime = frame.timestamp / 1e6;
-                    updatePlaybackControlsUI(seekBaseSeconds + state.lastPresentedTime);
-                } catch (err) {
-                    console.warn('WebCodecs canvas paint failed', err);
-                } finally {
-                    try { frame.close(); } catch (_) {}
-                }
-            }
-
-            if (!state.fpsStart) state.fpsStart = now;
-            if (now - state.fpsStart >= 1000) {
-                const fps = Math.round((state.drawn * 1000) / Math.max(1, now - state.fpsStart));
-                statusFps.textContent = `FPS ${fps} · ${canvas.width}×${canvas.height} · WebCodecs`;
-                state.drawn = 0;
-                state.fpsStart = now;
-            }
         }
+
+        if (state.frames.length && state.frames[0].timestamp / 1e6 <= videoClock + 0.050) {
+
+            const frame = state.frames.shift();
+
+            try {
+
+                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+
+                    canvas.width = frame.displayWidth;
+
+                    canvas.height = frame.displayHeight;
+
+                    layoutVideoCanvas();
+
+                }
+
+                ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+
+                state.drawn++;
+
+            } catch (err) {
+
+                console.warn('WebCodecs canvas paint failed', err);
+
+            } finally { try { frame.close(); } catch (_) {} }
+
+        }
+
         state.raf = requestAnimationFrame(draw);
+
     };
+
     state.raf = requestAnimationFrame(draw);
-}
+
+} 
 
 async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     canvasVideoMode = true;
