@@ -1,6 +1,81 @@
 <!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#070910"><title>ASCILINE — Search</title><link rel="stylesheet" href="/static/search.css?v=2"></head>
-<body><div class="ambient"></div><main class="shell"><header class="brandbar"><a class="brand" href="/" aria-label="ASCILINE Startseite"><span class="brand-mark">A</span><span>ASCILINE</span></a><span class="eyebrow">PRIVATE MEDIA INTERFACE</span></header>
-<section class="hero"><div class="overline"><span class="pulse"></span> SEARCH / DISCOVER</div><h1>Find your<br><em>next signal.</em></h1><p class="intro">Durchsuche Videos und Kanäle. Die Wiedergabe öffnet sich separat in einer eigenen Canvas-Ansicht.</p>
-<form id="search-form" class="search-form"><span class="search-icon">⌕</span><input id="search-query" type="search" autocomplete="off" placeholder="Video, Musik oder Kanal suchen …" aria-label="YouTube durchsuchen" required maxlength="200"><button id="search-button" type="submit">SUCHEN <span>↗</span></button></form><div class="hint">YOUTUBE SEARCH <span>·</span> SEPARATE PLAYER <span>·</span> CANVAS MODE</div></section>
-<section class="results-section"><div class="results-heading"><div><span class="section-index">01 / RESULTS</span><h2 id="results-title">Entdecken</h2></div><div id="results-count" class="count">BEREIT</div></div><div id="search-message" class="message" role="status" aria-live="polite">Gib oben einen Suchbegriff ein, um Ergebnisse zu laden.</div><div id="search-results" class="results-grid"></div></section><footer><span>ASCILINE <b>●</b> SEARCH</span><span>PLAYBACK OPENS IN A SEPARATE VIEW</span></footer></main><script src="/static/search.js?v=2" defer></script></body></html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#070910">
+  <title>ASCILINE — Search & Channels</title>
+  <link rel="stylesheet" href="/static/search.css?v=3">
+</head>
+<body>
+  <div class="ambient"></div>
+  <main class="shell">
+    <header class="brandbar">
+      <a class="brand" href="/" aria-label="ASCILINE Startseite">
+        <span class="brand-mark">A</span>
+        <span>ASCILINE</span>
+      </a>
+      <span class="eyebrow">PRIVATE MEDIA INTERFACE</span>
+    </header>
+
+    <section class="hero">
+      <div class="overline"><span class="pulse"></span> SEARCH / DISCOVER</div>
+      <h1>Find your<br><em>next signal.</em></h1>
+      <p class="intro">Durchsuche Videos und Kanäle. Beim Scrollen werden automatisch weitere Ergebnisse geladen.</p>
+      
+      <form id="search-form" class="search-form">
+        <span class="search-icon">⌕</span>
+        <input id="search-query" type="search" autocomplete="off" placeholder="Video, Musik oder Kanal suchen …" aria-label="YouTube durchsuchen" required maxlength="200">
+        <button id="search-button" type="submit">SUCHEN <span>↗</span></button>
+      </form>
+
+      <div class="filter-bar">
+        <button id="tab-videos" type="button" class="filter-tab active">🎬 Videos</button>
+        <button id="tab-channels" type="button" class="filter-tab">📺 Kanäle</button>
+      </div>
+    </section>
+
+    <section class="results-section">
+      <!-- Kanal-Banner (erscheint, wenn man einen Kanal öffnet) -->
+      <div id="channel-banner" class="channel-banner hidden">
+        <div class="channel-banner-info">
+          <img id="channel-banner-avatar" class="channel-banner-avatar" src="" alt="">
+          <div>
+            <span class="channel-badge">KANAL-ANSICHT</span>
+            <h3 id="channel-banner-title">Kanalname</h3>
+            <p id="channel-banner-desc"></p>
+          </div>
+        </div>
+        <button id="btn-close-channel" type="button" class="btn-back-search">← Zurück zur Suche</button>
+      </div>
+
+      <div class="results-heading">
+        <div>
+          <span class="section-index">01 / RESULTS</span>
+          <h2 id="results-title">Entdecken</h2>
+        </div>
+        <div id="results-count" class="count">BEREIT</div>
+      </div>
+
+      <div id="search-message" class="message" role="status" aria-live="polite">
+        Gib oben einen Suchbegriff ein, um Ergebnisse zu laden.
+      </div>
+
+      <div id="search-results" class="results-grid"></div>
+
+      <!-- Unsichtbarer Sensor für automatisches Nachladen beim Scrollen -->
+      <div id="scroll-sentinel" class="scroll-sentinel">
+        <div id="scroll-loader" class="scroll-loader hidden">
+          <span class="loading">Weitere Ergebnisse werden geladen …</span>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>ASCILINE <b>●</b> SEARCH</span>
+      <span>INFINITE SCROLL · CHANNEL BROWSER · CANVAS MODE</span>
+    </footer>
+  </main>
+  <script src="/static/search.js?v=3" defer></script>
+</body>
+</html>
