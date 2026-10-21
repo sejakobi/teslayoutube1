@@ -19,17 +19,18 @@
   </header>
   <div id="subbar">
     <div id="preset-group" role="group" aria-label="Qualität">
-      <button class="preset-btn active" data-preset="low" type="button">Gering</button>
-      <button class="preset-btn" data-preset="med" type="button">Mittel</button>
-      <button class="preset-btn" data-preset="high" type="button">Hoch</button>
+      <button class="preset-btn active" data-preset="low" type="button">Low</button>
+      <button class="preset-btn" data-preset="med" type="button">Medium</button>
+      <button class="preset-btn" data-preset="high" type="button">High</button>
     </div>
     <div id="display-mode-group" role="group" aria-label="Darstellung">
-      <button class="hidden" data-display-mode="ascii" type="button">ASCII</button>
-      <button class="hidden" data-display-mode="canvas" type="button">Canvas</button>
+      <button class="display-mode-btn" data-display-mode="ascii" type="button">ASCII</button>
+      <button class="display-mode-btn active" data-display-mode="canvas" type="button">Canvas</button>
     </div>
     <div id="preset-hint" class="hidden"></div>
     <div id="volume-group">
-     
+      <button id="btn-mute" type="button" aria-label="Ton umschalten">◖</button>
+      <input type="range" id="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Lautstärke">
     </div>
   </div>
   <section id="search-panel" class="hidden">
