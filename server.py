@@ -143,8 +143,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(q: str = ""):
-    """Search YouTube videos via the server-side YouTube Data API v3."""
+async def api_search(q: str = "", pageToken: str = ""):
+    """Search YouTube videos via the server-side YouTube Data API v3 with pagination."""
     query = q.strip()
     if not query:
         return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
@@ -153,12 +153,27 @@ async def api_search(q: str = ""):
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
+    
+    param_dict = {
+        "part": "snippet", 
+        "type": "video", 
+        "maxResults": 15,  # Anzahl der Treffer pro Nachlade-Paket (z.B. 15)
+        "q": query, 
+        "regionCode": "DE", 
+        "relevanceLanguage": "de", 
+        "key": api_key
+    }
+    if pageToken:
+        param_dict["pageToken"] = pageToken
+
+    params = urlencode(param_dict)
     url = "https://www.googleapis.com/youtube/v3/search?" + params
+
     def fetch_results():
         request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
         with urlopen(request, timeout=12) as response:
             return json.loads(response.read().decode("utf-8"))
+
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
@@ -169,8 +184,18 @@ async def api_search(q: str = ""):
                 continue
             thumbs = snippet.get("thumbnails", {})
             thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            results.append({"selection":_new_selection(video_id), "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
-        return {"results":results}
+            results.append({
+                "selection": _new_selection(video_id), 
+                "title": snippet.get("title", "Unbekanntes Video"), 
+                "channel": snippet.get("channelTitle", ""), 
+                "thumbnail": thumb.get("url", ""), 
+                "published_at": snippet.get("publishedAt", "")
+            })
+        
+        return {
+            "results": results,
+            "nextPageToken": data.get("nextPageToken", "") # Token für die nächste Seite mitliefern
+        }
     except HTTPError as exc:
         try:
             details = json.loads(exc.read().decode("utf-8"))
