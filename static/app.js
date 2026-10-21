@@ -383,66 +383,44 @@ function getMp4VideoDescription(mp4File, track) {
 }
 
 function startWebCodecsDrawLoop(state) {
-
     if (state.raf || state.stopped) return;
-
-    const draw = (now) => {
-
-        state.raf = 0;
-
-        if (state.stopped || webCodecsState !== state || appState !== 'playing') return;
-
-        if (state.playbackStart === null && state.frames.length) {
-
-            state.playbackStart = now - (state.frames[0].timestamp / 1000);
-
+    
+    // Statt requestAnimationFrame nutzen wir ein stabiles Intervall (z.B. ~30 FPS = 33ms)
+    const intervalMs = 1000 / 30;
+    
+    state.raf = setInterval(() => {
+        if (state.stopped || webCodecsState !== state || appState !== 'playing') {
+            clearInterval(state.raf);
+            return;
         }
 
-        const videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
-
-        while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= videoClock + 0.025) {
-
-            const older = state.frames.shift();
-
-            try { older.close(); } catch (_) {}
-
+        if (typeof pumpSampleQueue === 'function') {
+            pumpSampleQueue(state);
         }
 
-        if (state.frames.length && state.frames[0].timestamp / 1e6 <= videoClock + 0.050) {
-
+        if (!isPlaybackPaused && state.frames.length > 0) {
             const frame = state.frames.shift();
-
             try {
-
-                if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-
-                    canvas.width = frame.displayWidth;
-
-                    canvas.height = frame.displayHeight;
-
+                const fw = frame.displayWidth || frame.codedWidth || 640;
+                const fh = frame.displayHeight || frame.codedHeight || 360;
+                if (canvas.width !== fw || canvas.height !== fh) {
+                    canvas.width = fw;
+                    canvas.height = fh;
                     layoutVideoCanvas();
-
                 }
-
+                canvas.style.display = 'block';
                 ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-
                 state.drawn++;
-
+                state.lastPresentedTime = frame.timestamp / 1e6;
+                updatePlaybackControlsUI(seekBaseSeconds + state.lastPresentedTime);
             } catch (err) {
-
-                console.warn('WebCodecs canvas paint failed', err);
-
-            } finally { try { frame.close(); } catch (_) {} }
-
+                console.warn('Canvas paint failed:', err);
+            } finally {
+                try { frame.close(); } catch (_) {}
+            }
         }
-
-        state.raf = requestAnimationFrame(draw);
-
-    };
-
-    state.raf = requestAnimationFrame(draw);
-
-} 
+    }, intervalMs);
+}
 
 async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight) {
     canvasVideoMode = true;
