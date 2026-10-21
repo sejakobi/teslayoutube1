@@ -1164,7 +1164,7 @@ state.decoder = new VideoDecoder({
                         }
                         state.frames.push(frame);
                         state.frames.sort((a, b) => a.timestamp - b.timestamp);
-               if (!state.started) {
+            if (!state.started) {
                             state.started = true;
                             appState = 'playing';
                             stopLoadingCreep();
@@ -1172,14 +1172,10 @@ state.decoder = new VideoDecoder({
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
                             
-                            // Sanftes Ausblenden des Ladebildschirms, das sich danach nicht mehr reaktiviert
+                            // ── FIX: Ladebildschirm jetzt sofort und erzwingend ausblenden ──
                             if (idleOverlay) {
-                                idleOverlay.style.opacity = '0';
-                                idleOverlay.style.transition = 'opacity 0.4s ease';
-                                setTimeout(() => {
-                                    idleOverlay.classList.add('hidden');
-                                    idleOverlay.style.opacity = '';
-                                }, 400);
+                                idleOverlay.classList.add('hidden');
+                                idleOverlay.style.display = 'none'; // Erzwingt das sofortige Verschwinden
                             }
 
                             canvas.style.display = 'block';
