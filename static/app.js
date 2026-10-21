@@ -1089,14 +1089,12 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         decoderConfigured: false,
     };
     webCodecsState = state;
-if (!isRecovery) {
+webCodecsState = state;
+    if (!isRecovery) {
         setStatus('BUFFERING · WEBCODECS', 'resolving');
-        // Ladebildschirm nur anzeigen, wenn er nicht ohnehin schon versteckt ist (kein Aufblinken bei Reconnects)
-        if (!idleOverlay || idleOverlay.classList.contains('hidden')) {
-            // Im laufenden Betrieb keinen Vollbild-Ladebalken einblenden
-        } else {
-            startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
-        }
+        // Ladebildschirm nur beim initialen Start anzeigen, nicht bei Hintergrund-Resyncs
+        if (idleOverlay) idleOverlay.classList.remove('hidden');
+        startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
         if (statusPerf) statusPerf.classList.add('hidden');
     }
     updatePlaybackControlsUI(seekBaseSeconds);
