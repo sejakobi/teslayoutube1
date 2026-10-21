@@ -218,6 +218,141 @@
   background: #030405 !important;
   box-shadow: 0 14px 40px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025) !important;
 }
+
+/* ───────── NEU: Creator Channel Bar (Top Left) ───────── */
+.watch-page #creator-channel-bar {
+  position: absolute !important;
+  top: 16px !important;
+  left: 16px !important;
+  z-index: 10 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+  background: rgba(19, 22, 24, 0.85) !important;
+  padding: 8px 16px !important;
+  border-radius: 20px !important;
+  border: 1px solid var(--ui-border) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3) !important;
+  transition: opacity 0.3s ease, transform 0.3s ease !important;
+}
+.watch-page #creator-channel-bar.hidden {
+  display: none !important;
+}
+.watch-page .creator-info {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+}
+.watch-page .creator-name {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  color: var(--ui-text) !important;
+  display: block !important;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5) !important;
+}
+.watch-page .creator-sub {
+  font-size: 10px !important;
+  color: var(--ui-muted) !important;
+  display: block !important;
+}
+.watch-page .btn-sm {
+  padding: 6px 14px !important;
+  font-size: 11px !important;
+  font-weight: 650 !important;
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 14px !important;
+  cursor: pointer !important;
+  transition: background 0.2s ease, border-color 0.2s ease !important;
+}
+.watch-page .btn-sm:hover {
+  background: var(--ui-accent) !important;
+  border-color: var(--ui-accent) !important;
+}
+
+/* ───────── NEU: Playback Controls Dock (Bottom Center) ───────── */
+.watch-page #playback-controls {
+  position: absolute !important;
+  bottom: 24px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 10 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+  padding: 8px 20px !important;
+  background: rgba(15, 18, 20, 0.85) !important;
+  border: 1px solid var(--ui-border) !important;
+  border-radius: 999px !important;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.watch-page #playback-controls.hidden {
+  display: none !important;
+}
+.watch-page .dock-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: var(--ui-text) !important;
+  font-size: 14px !important;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 50% !important;
+  cursor: pointer !important;
+  transition: transform 0.15s ease, background 0.2s ease, color 0.2s ease !important;
+}
+.watch-page .dock-btn:hover {
+  background: var(--ui-accent) !important;
+  color: #fff !important;
+  border-color: transparent !important;
+  transform: scale(1.05) !important;
+}
+.watch-page .dock-btn:active {
+  transform: scale(0.95) !important;
+}
+.watch-page .dock-time {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  color: #b2b8bd !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  min-width: 38px !important;
+  text-align: center !important;
+}
+.watch-page #playback-progress {
+  width: clamp(120px, 30vw, 400px) !important;
+  height: 4px !important;
+  accent-color: var(--ui-accent) !important;
+  background: rgba(255,255,255,0.15) !important;
+  border-radius: 2px !important;
+  outline: none !important;
+  -webkit-appearance: none !important;
+  cursor: pointer !important;
+  transition: height 0.1s ease !important;
+}
+.watch-page #playback-progress:hover {
+  height: 6px !important;
+}
+.watch-page #playback-progress::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: #fff !important;
+  cursor: pointer !important;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
+  transition: transform 0.1s ease !important;
+}
+.watch-page #playback-progress::-webkit-slider-thumb:hover {
+  transform: scale(1.2) !important;
+}
+
 .watch-page #ascii-canvas {
   position: absolute !important;
   inset: 0 !important;
@@ -386,6 +521,11 @@
   .watch-page #statusbar { gap: 8px !important; min-height: 43px !important; padding-inline: 12px !important; }
   .watch-page #status-title { font-size: 11px !important; }
   .watch-page .status-fps, .watch-page .status-perf { display: none !important; }
+  
+  /* Responsive Anpassungen für neue UI */
+  .watch-page #playback-controls { padding: 6px 14px !important; gap: 8px !important; bottom: 16px !important; }
+  .watch-page #playback-progress { width: clamp(80px, 40vw, 200px) !important; }
+  .watch-page #creator-channel-bar { top: 12px !important; left: 12px !important; padding: 6px 12px !important; }
 }
 
 @media (max-width: 410px) {
@@ -395,4 +535,5 @@
   .watch-page #volume-slider { width: 45px !important; }
   .watch-page .preset-btn, .watch-page .display-mode-btn { padding-inline: 6px !important; }
   .watch-page #status-live { display: none !important; }
+  .watch-page .dock-time { display: none !important; }
 }
