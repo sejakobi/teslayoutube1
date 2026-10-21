@@ -810,3 +810,310 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
     }
 }
+
+function startRenderingAndAudio(sid) {
+    void startHiddenWebAudio(sid, 0);
+    readyToRender = true;
+    lastFpsUpdate = performance.now();
+    fpsWindowStart = lastFpsUpdate;
+    requestAnimationFrame(renderFrame);
+}
+
+// ───────── WebSocket (ASCII Mode) ─────────
+function connectWs(sid) {
+    clearFrameBuffer();
+    canvasVideoMode = false;
+    lastCanvasFrameIndex = -1;
+    frameCount        = 0;
+    measuredFps       = 0;
+    fpsWindowFrames   = 0;
+    fpsWindowStart    = 0;
+    fpsBelowThreshold = false;
+    readyToRender     = false;
+    clockAnchored     = false;
+    lastPaintTime     = 0;
+    maxPaintInterval  = 0;
+    if (playbackControls) playbackControls.classList.add('hidden');
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => setStatus('BUFFERING', 'resolving');
+
+    ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+            if (event.data.startsWith('Error:')) {
+                setError(event.data.replace(/^Error:\s*/, ''));
+                closeWs();
+                return;
+            }
+            if (event.data.startsWith('CANVAS_INIT:')) {
+                wsRetryCount = 0;
+                const p = event.data.split(':');
+                targetFps = parseFloat(p[1]);
+                const width = parseInt(p[2], 10);
+                const height = parseInt(p[3], 10);
+                renderMode = 0;
+                pixelMode = false;
+                buildVideoCanvas(width, height);
+                setStatus('PLAYING · CANVAS', 'playing');
+                idleOverlay.classList.add('hidden');
+                startRenderingAndAudio(sid);
+                return;
+            } else if (event.data.startsWith('INIT:')) {
+                wsRetryCount = 0;
+                const p = event.data.split(':');
+                targetFps  = parseFloat(p[1]);
+                renderMode = parseInt(p[2]);
+                pixelMode  = (p.length > 5 && parseInt(p[5]) === 1);
+                canvasVideoMode = false;
+                buildCanvas(parseInt(p[3]), parseInt(p[4]));
+                setStatus('PLAYING · ASCII', 'playing');
+                idleOverlay.classList.add('hidden');
+                startRenderingAndAudio(sid);
+                return;
+            }
+            const nl  = event.data.indexOf('\n');
+            const idx = parseInt(event.data.substring(0, nl));
+            frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
+        } else {
+            const view = new DataView(event.data);
+            const idx  = view.getUint32(0, false);
+            frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
+        }
+        while (frameBuffer.length > FRAME_BUFFER_MAX) {
+            const dropped = frameBuffer.shift();
+            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
+        }
+    };
+
+    ws.onclose = (evt) => {
+        if (appState !== 'playing' || evt.code === 1000 || evt.code === 4003) {
+            if (appState === 'playing') {
+                setStatus('ENDED', 'idle');
+                finishPlayback();
+            }
+            return;
+        }
+        wsRetryCount++;
+        if (wsRetryCount > WS_MAX_RETRIES) {
+            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
+            finishPlayback();
+            return;
+        }
+        const delay = wsRetryCount * 1000;
+        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
+        wsRetryTimer = setTimeout(() => {
+            wsRetryTimer = null;
+            if (appState === 'playing' && sessionId === sid) connectWs(sid);
+        }, delay);
+    };
+
+    ws.onerror = () => {};
+}
+
+// ───────── Control API ─────────
+async function doPlay(resumeAtSec = 0) {
+    const params = new URLSearchParams(location.search);
+    const selection = params.get('selection');
+    const query = queryInput ? queryInput.value.trim() : '';
+    if (!selection && !query) { if (queryInput) queryInput.focus(); return; }
+
+    presetHint.classList.add('hidden');
+    stopCustomWebAudio();
+    stopPoll();
+    closeWs();
+    clearCanvas();
+
+    wsRetryCount = 0;
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+
+    appState      = 'resolving';
+    currentPreset = selectedPreset;
+    setUiState('resolving');
+    setStatus('RESOLVING…', 'resolving');
+    statusTitle.textContent = selection ? 'ASCILINE' : query;
+    statusLive.classList.add('hidden');
+    statusFps.textContent = '';
+    statusPerf.classList.add('hidden');
+
+    let resp, data;
+    try {
+        resp = await fetch('/api/play', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(selection
+                ? { selection, preset: currentPreset, display_mode: selectedDisplayMode }
+                : { query, preset: currentPreset, display_mode: selectedDisplayMode }),
+        });
+        data = await resp.json();
+    } catch (err) {
+        setError('Network error — ' + err.message);
+        setUiState('idle');
+        return;
+    }
+    if (!resp.ok) {
+        setError(data.error || `Server error ${resp.status}`);
+        setUiState('idle');
+        return;
+    }
+
+    sessionId        = data.session_id;
+    appState         = 'playing';
+    mediaDurationSec = Number(data.duration) || 0;
+    mediaIsLive      = Boolean(data.is_live);
+    setUiState('playing');
+    updateTitle(data.title, data.is_live);
+
+    idleOverlay.classList.add('hidden');
+    if (selectedDisplayMode === 'canvas') {
+        startNativeCanvasMedia(
+            sessionId,
+            data.canvas_width,
+            data.canvas_height,
+            mediaDurationSec,
+            mediaIsLive,
+            Number(resumeAtSec) || 0
+        );
+    } else {
+        connectWs(sessionId);
+    }
+    startPoll();
+}
+
+async function doStop() {
+    stopCustomWebAudio();
+    stopPoll();
+    wsRetryCount = 0;
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+    try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
+    closeWs();
+    finishPlayback();
+    setStatus('IDLE', 'idle');
+    statusTitle.textContent = '';
+    statusLive.classList.add('hidden');
+    presetHint.classList.add('hidden');
+}
+
+function startPoll() {
+    stopPoll();
+    pollTimer = setInterval(async () => {
+        if (appState !== 'playing') { stopPoll(); return; }
+        let data;
+        try {
+            const r = await fetch('/api/status');
+            data = await r.json();
+        } catch (_) { return; }
+        if (data.title) updateTitle(data.title, data.is_live);
+        if (data.duration && !mediaDurationSec) {
+            mediaDurationSec = Number(data.duration) || 0;
+        }
+        if (data.state === 'error') {
+            setError(data.error || 'Stream error');
+            closeWs();
+            finishPlayback();
+            stopPoll();
+        }
+    }, 2000);
+}
+
+function stopPoll() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function setUiState(state) {
+    if (btnPlay) btnPlay.disabled = false;
+    if (btnStop) btnStop.disabled = !(state === 'resolving' || state === 'playing');
+}
+
+function setStatus(label, stateClass) {
+    statusState.textContent = label;
+    statusState.className   = 'status-segment status-state';
+    if (stateClass) statusState.classList.add('state-' + stateClass);
+}
+
+function setError(msg) {
+    appState = 'error';
+    statusTitle.textContent = '⚠ ' + msg;
+    setStatus('ERROR', 'error');
+    statusLive.classList.add('hidden');
+    statusFps.textContent = '';
+    statusPerf.classList.add('hidden');
+    setUiState('idle');
+    idleOverlay.classList.remove('hidden');
+}
+
+function updateTitle(title, isLive) {
+    if (title) statusTitle.textContent = title;
+    statusLive.classList.toggle('hidden', !isLive);
+}
+
+function finishPlayback() {
+    stopCustomWebAudio();
+    appState          = 'idle';
+    readyToRender     = false;
+    isPlaybackPaused  = false;
+    seekBaseSeconds   = 0;
+    clearFrameBuffer();
+    stopNativeCanvasSource();
+    clearCanvas();
+    idleOverlay.classList.remove('hidden');
+    if (playbackControls) playbackControls.classList.add('hidden');
+    setUiState('idle');
+    statusFps.textContent = '';
+    statusPerf.classList.add('hidden');
+    fpsBelowThreshold = false;
+}
+
+function clearCanvas() {
+    stopNativeCanvasSource();
+    canvasVideoMode = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    canvas.style.display      = 'none';
+    asciiPlayer.textContent   = '';
+    asciiPlayer.style.display = 'none';
+}
+
+function closeWs() {
+    if (!ws) return;
+    ws.onclose = null;
+    ws.onerror = null;
+    try { ws.close(); } catch (_) {}
+    ws = null;
+}
+
+const flushSelectionLayer = () => {
+    if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
+    asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
+};
+asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
+document.addEventListener('copy', flushSelectionLayer);
+
+if (btnPlay) btnPlay.addEventListener('click', () => { void doPlay(0); });
+if (btnStop) btnStop.addEventListener('click', doStop);
+
+window.addEventListener('resize', () => {
+    if (canvasVideoMode && appState === 'playing') layoutVideoCanvas();
+    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
+});
+
+// Split-page mode: /watch startet automatisch das ausgewählte Video
+if (location.pathname === '/watch') {
+    document.body.classList.add('watch-page');
+    const params = new URLSearchParams(location.search);
+    const selection = params.get('selection');
+    if (btnPlay) btnPlay.classList.add('hidden');
+    if (btnSearch) btnSearch.classList.add('hidden');
+    if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
+    if (btnStop) {
+        btnStop.classList.remove('hidden');
+        btnStop.addEventListener('click', () => { location.href = '/'; });
+    }
+    if (selection) {
+        window.setTimeout(() => { void doPlay(0); }, 0);
+    } else {
+        const arrow = document.getElementById('idle-arrow');
+        if (arrow) arrow.textContent = 'Kein Video ausgewählt – bitte zur Suche zurückkehren.';
+    }
+}
