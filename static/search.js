@@ -13,7 +13,7 @@ let nextPageToken = '';
 let isLoading = false;
 let totalCount = 0;
 
-// Hilfsfunktion zum Rendern der Videokarten
+// Hilfsfunktion zum Rendern einer Liste von Videos
 function renderItems(items) {
     for (const item of items) {
         const card = document.createElement('button');
@@ -41,7 +41,7 @@ function renderItems(items) {
         t.textContent = item.title || 'Unbenanntes Video';
         
         const ch = document.createElement('span');
-        ch.className='result-channel';
+        ch.className = 'result-channel';
         ch.textContent = item.channel || 'Unbekannter Kanal';
         
         const meta = document.createElement('span');
@@ -56,11 +56,27 @@ function renderItems(items) {
         card.append(wrap, body);
         
         card.addEventListener('click', () => {
+            // Scrollposition vor dem Verlassen speichern
+            sessionStorage.setItem('scroll_pos', window.scrollY);
             if (item.selection) location.href = '/watch?selection=' + encodeURIComponent(item.selection);
         });
         
         results.append(card);
     }
+}
+
+// Suchdaten im Browser-SessionStorage sichern
+function saveStateToSession(items, reset = false) {
+    let savedItems = reset ? [] : JSON.parse(sessionStorage.getItem('search_items') || '[]');
+    if (reset) {
+        savedItems = items;
+    } else {
+        savedItems = savedItems.concat(items);
+    }
+    sessionStorage.setItem('search_items', JSON.stringify(savedItems));
+    sessionStorage.setItem('search_query', currentQuery);
+    sessionStorage.setItem('next_page_token', nextPageToken);
+    sessionStorage.setItem('total_count', totalCount);
 }
 
 async function fetchResults(isLoadMore = false) {
@@ -113,6 +129,7 @@ async function fetchResults(isLoadMore = false) {
         }
 
         renderItems(items);
+        saveStateToSession(items, !isLoadMore);
         message.textContent = nextPageToken ? 'Scrolle nach unten für weitere Ergebnisse.' : 'Alle Ergebnisse geladen.';
     } catch (err) {
         if (id === requestNo) {
@@ -137,18 +154,49 @@ form.addEventListener('submit', e => {
     requestNo++;
     currentQuery = q;
     nextPageToken = '';
+    sessionStorage.removeItem('search_items'); // alten Speicher leeren
     fetchResults(false);
 });
 
-// Automatisches Nachladen beim Scrollen (Infinite Scroll über IntersectionObserver)
+// Automatisches Nachladen beim Scrollen
 const sentinel = document.createElement('div');
 sentinel.style.height = '20px';
-document.body.appendChild(sentinel); // oder an einen passenden Container anhängen
+results.parentNode.insertBefore(sentinel, results.nextSibling);
 
 const observer = new IntersectionObserver(entries => {
     if (entries[0].isIntersecting && nextPageToken && !isLoading && currentQuery) {
         fetchResults(true);
     }
-}, { rootMargin: '200px' }); // Lädt nach, bevor man ganz unten ist
+}, { rootMargin: '200px' });
 
 observer.observe(sentinel);
+
+// Beim Laden der Seite prüfen, ob es eine gespeicherte Suche gibt (z.B. nach Rückkehr von /watch)
+window.addEventListener('DOMContentLoaded', () => {
+    const savedQuery = sessionStorage.getItem('search_query');
+    const savedItems = JSON.parse(sessionStorage.getItem('search_items') || '[]');
+    const savedToken = sessionStorage.getItem('next_page_token');
+    const savedCount = sessionStorage.getItem('total_count');
+    const savedScroll = sessionStorage.getItem('scroll_pos');
+
+    if (savedQuery && savedItems.length > 0) {
+        currentQuery = savedQuery;
+        input.value = savedQuery;
+        nextPageToken = savedToken || '';
+        totalCount = parseInt(savedCount, 10) || savedItems.length;
+
+        count.textContent = String(totalCount).padStart(2, '0') + ' ITEMS';
+        title.textContent = 'Suchergebnisse';
+        message.className = 'message';
+        message.textContent = nextPageToken ? 'Scrolle nach unten für weitere Ergebnisse.' : 'Alle Ergebnisse geladen.';
+
+        renderItems(savedItems);
+
+        // Scrollposition wiederherstellen
+        if (savedScroll) {
+            setTimeout(() => {
+                window.scrollTo(0, parseInt(savedScroll, 10));
+            }, 50);
+        }
+    }
+});
