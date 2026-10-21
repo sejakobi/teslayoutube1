@@ -41,7 +41,8 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-.watch-page .hidden {
+
+.watch-page #idle-overlay.hidden {
   display: none !important;
 }
 
