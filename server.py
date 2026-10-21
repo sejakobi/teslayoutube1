@@ -17,7 +17,6 @@ import shutil
 import signal
 import secrets
 import time
-import subprocess
 import sys
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
@@ -40,7 +39,7 @@ from starlette.websockets import WebSocketState
 
 import auth
 from config import PRESETS, CANVAS_PRESETS, DEFAULT_PRESET, SERVER_DEFAULTS
-from pipeline import PresetSpec, _ffmpeg_input_header_args
+from pipeline import AudioPipeline, PresetSpec, _ffmpeg_input_header_args
 from resolver import ResolverError
 from session import (
     Session, State,
@@ -60,7 +59,7 @@ PIN_PAGE = os.path.join(STATIC_DIR, "pin.html")
 
 # Short-lived opaque selections: YouTube IDs stay on the server, not in page URLs.
 _SELECTIONS: dict[str, tuple[str, float]] = {}
-_SELECTION_TTL = 30 * 60
+_SELECTION_TTL = 60 * 60
 
 def _new_selection(video_id: str) -> str:
     now = time.time()
@@ -134,151 +133,215 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(q: str = "", search_type: str = "video", channel_id: str = "", uploads_playlist_id: str = "", page_token: str = ""):
-    """YouTube Data API v3 Wrapper für Videos, Kanäle und Kanal-Uploads."""
+async def api_search(
+    q: str = "",
+    search_type: str = "video",
+    page_token: str = "",
+    channel_id: str = "",
+    max_results: int = 24,
+):
+    """Search YouTube videos or channels with pagination & channel uploads support."""
+    query = q.strip()
+    channel_id = channel_id.strip()
+    page_token = page_token.strip()
+    stype = "channel" if search_type == "channel" else "video"
+    limit = max(1, min(50, max_results))
+
+    if not query and not channel_id:
+        return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
+    if len(query) > 200:
+        return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
+
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
 
-    params = {"key": api_key, "maxResults": "25"}
+    params: dict[str, str | int] = {
+        "part": "snippet",
+        "type": stype,
+        "maxResults": limit,
+        "regionCode": "DE",
+        "relevanceLanguage": "de",
+        "key": api_key,
+    }
+    if query:
+        params["q"] = query
+    if channel_id and stype == "video":
+        params["channelId"] = channel_id
+        if not query:
+            params["order"] = "date"
     if page_token:
         params["pageToken"] = page_token
 
-    if channel_id and uploads_playlist_id:
-        url = "https://www.googleapis.com/youtube/v3/playlistItems?" + urlencode({**params, "part": "snippet,contentDetails", "playlistId": uploads_playlist_id})
-    elif channel_id:
-        chan_url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode({"key": api_key, "part": "contentDetails,snippet", "id": channel_id})
-        try:
-            chan_data = await asyncio.to_thread(lambda: json.loads(urlopen(UrlRequest(chan_url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=10).read().decode("utf-8")))
-            items = chan_data.get("items", [])
-            if not items:
-                return {"results": []}
-            uploads_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-            return await api_search(channel_id=channel_id, uploads_playlist_id=uploads_id)
-        except Exception:
-            return JSONResponse(status_code=502, content={"error": "Kanal konnte nicht geladen werden."})
-    else:
-        query = q.strip()
-        if not query:
-            return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
-        stype = "channel" if search_type == "channel" else "video"
-        url = "https://www.googleapis.com/youtube/v3/search?" + urlencode({**params, "part": "snippet", "type": stype, "q": query, "regionCode": "DE", "relevanceLanguage": "de"})
+    url = "https://www.googleapis.com/youtube/v3/search?" + urlencode(params)
 
     def fetch_results():
-        with urlopen(UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=12) as response:
+        request = UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"})
+        with urlopen(request, timeout=12) as response:
             return json.loads(response.read().decode("utf-8"))
 
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
         for item in data.get("items", []):
-            snippet = item.get("snippet", {})
-            thumbs = snippet.get("thumbnails", {})
-            thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            
-            if channel_id and uploads_playlist_id:
-                vid = item.get("contentDetails", {}).get("videoId") or snippet.get("resourceId", {}).get("videoId")
-                if not vid: continue
+            id_obj = item.get("id", {}) or {}
+            snippet = item.get("snippet", {}) or {}
+            thumbs = snippet.get("thumbnails", {}) or {}
+            thumb = thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}
+
+            if stype == "channel" or id_obj.get("kind") == "youtube#channel":
+                cid = id_obj.get("channelId") or snippet.get("channelId")
+                if not cid:
+                    continue
                 results.append({
-                    "selection": _new_selection(vid),
-                    "title": snippet.get("title", "Video"),
-                    "channel": snippet.get("channelTitle", ""),
+                    "result_type": "channel",
+                    "channel_id": cid,
+                    "title": snippet.get("title", "Unbekannter Kanal"),
+                    "channel": snippet.get("channelTitle", snippet.get("title", "")),
+                    "description": snippet.get("description", ""),
                     "thumbnail": thumb.get("url", ""),
                     "published_at": snippet.get("publishedAt", ""),
-                    "result_type": "video"
                 })
             else:
-                id_info = item.get("id", {})
-                res_type = id_info.get("kind", "").split("#")[-1]
-                if res_type == "channel":
-                    cid = id_info.get("channelId")
-                    if not cid: continue
-                    results.append({
-                        "channel_id": cid,
-                        "title": snippet.get("title", "Kanal"),
-                        "description": snippet.get("description", ""),
-                        "thumbnail": thumb.get("url", ""),
-                        "result_type": "channel"
-                    })
-                else:
-                    vid = id_info.get("videoId")
-                    if not vid: continue
-                    results.append({
-                        "selection": _new_selection(vid),
-                        "title": snippet.get("title", "Video"),
-                        "channel": snippet.get("channelTitle", ""),
-                        "thumbnail": thumb.get("url", ""),
-                        "published_at": snippet.get("publishedAt", ""),
-                        "result_type": "video"
-                    })
+                video_id = id_obj.get("videoId")
+                if not video_id:
+                    continue
+                results.append({
+                    "result_type": "video",
+                    "selection": _new_selection(video_id),
+                    "title": snippet.get("title", "Unbekanntes Video"),
+                    "channel": snippet.get("channelTitle", ""),
+                    "channel_id": snippet.get("channelId", ""),
+                    "description": snippet.get("description", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": snippet.get("publishedAt", ""),
+                })
 
         return {
             "results": results,
             "next_page_token": data.get("nextPageToken", ""),
             "total_results": data.get("pageInfo", {}).get("totalResults", 0),
-            "uploads_playlist_id": uploads_playlist_id
         }
-    except Exception as exc:
+    except HTTPError as exc:
+        try:
+            details = json.loads(exc.read().decode("utf-8"))
+            api_message = details.get("error", {}).get("message", "")
+        except Exception:
+            api_message = ""
+        log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
+        if exc.code == 403:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel und Tageskontingent."},
+            )
+        return JSONResponse(status_code=502, content={"error": "Fehler bei der YouTube-Suche."})
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
         log.warning("YouTube search request failed: %s", exc)
         return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
-
-
-@app.get("/api/video-info")
-async def api_video_info(video_id: str):
-    """Liefert Kanal-Metadaten zu einem Video für den Creator-Banner."""
-    api_key = os.environ.get("YOUTUBE_API_KEY")
-    if not api_key or not video_id:
-        return {}
-    url = "https://www.googleapis.com/youtube/v3/videos?" + urlencode({"key": api_key, "part": "snippet", "id": video_id})
-    try:
-        def fetch():
-            with urlopen(UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=8) as r:
-                return json.loads(r.read().decode("utf-8"))
-        data = await asyncio.to_thread(fetch)
-        items = data.get("items", [])
-        if not items: return {}
-        snip = items[0].get("snippet", {})
-        return {
-            "channel_id": snip.get("channelId", ""),
-            "title": snip.get("channelTitle", "")
-        }
-    except Exception:
-        return {}
 
 
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
+
 @app.get("/watch")
 async def watch_page():
     return FileResponse(os.path.join(STATIC_DIR, "watch.html"))
 
 
+def _parse_start_seconds(raw: str | None) -> float:
+    if not raw:
+        return 0.0
+    try:
+        val = float(raw)
+        return max(0.0, val) if val == val else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _spawn_seeked_audio_ffmpeg(src: str, headers: dict[str, str], start_sec: float) -> asyncio.subprocess.Process:
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        *_ffmpeg_input_header_args(headers),
+        *(["-ss", f"{start_sec:.3f}"] if start_sec > 0 else []),
+        "-i", src,
+        "-vn",
+        "-acodec", "libmp3lame", "-ab", "128k", "-ar", "44100", "-ac", "2",
+        "-f", "mp3", "pipe:1",
+    ]
+    return asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+
+
+async def _seeked_audio_body(proc: asyncio.subprocess.Process, session: Session):
+    try:
+        if proc.stdout is None:
+            return
+        while not session.cancel_event.is_set():
+            chunk = await proc.stdout.read(16 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+
+
 @app.get("/audio")
 async def audio_stream(request: Request):
     session_id = request.query_params.get("session")
+    start_sec = _parse_start_seconds(request.query_params.get("start"))
     if not session_id:
         return Response(status_code=400, content="missing session id")
     session = get_manager().get(session_id)
-    if session is None:
+    if session is None or session.media is None:
         return Response(status_code=404, content="unknown or stale session id")
+
+    # Wenn gespult wurde (start > 0), starten wir einen frischen FFmpeg-Audiostream ab dieser Sekunde
+    if start_sec > 0:
+        audio_src = session.media.audio_url if session.media.audio_url else session.media.video_url
+        audio_headers = session.media.audio_headers if session.media.audio_url else session.media.video_headers
+        proc = await _spawn_seeked_audio_ffmpeg(audio_src, audio_headers, start_sec)
+        return StreamingResponse(
+            _seeked_audio_body(proc, session),
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     audio_pipeline = session.audio_pipeline
     if audio_pipeline is None:
         return Response(status_code=503, content="audio pipeline not ready")
 
-    # Als neutraler Binärstrom getarnt, um Browser-Media-Sperren zu umgehen
     return StreamingResponse(
         audio_pipeline.chunks(),
         media_type="application/octet-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
             "X-Content-Type-Options": "nosniff",
         },
     )
 
 
-def _native_mp4_command(session: Session) -> list[str]:
+def _native_mp4_command(session: Session, start_sec: float = 0.0) -> list[str]:
+    """Create a video-only fragmented MP4 stream for Canvas/WebCodecs."""
     media = session.media
     if media is None:
         raise ValueError("media is not ready")
@@ -286,7 +349,9 @@ def _native_mp4_command(session: Session) -> list[str]:
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
         "-thread_queue_size", "512",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         *_ffmpeg_input_header_args(media.video_headers),
+        *(["-ss", f"{start_sec:.3f}"] if start_sec > 0 else []),
         "-i", media.video_url,
         "-map", "0:v:0", "-an",
         "-c:v", "copy",
@@ -356,7 +421,9 @@ async def _native_mp4_body(
 
 @app.get("/media")
 async def native_canvas_media(request: Request):
+    """Browser-native stream endpoint used only by Canvas mode (disguised as octet-stream)."""
     session_id = request.query_params.get("session")
+    start_sec = _parse_start_seconds(request.query_params.get("start"))
     if not session_id:
         return Response(status_code=400, content="missing session id")
     session = get_manager().get(session_id)
@@ -366,18 +433,21 @@ async def native_canvas_media(request: Request):
         return Response(status_code=409, content="native media is only available in Canvas mode")
 
     try:
-        command = _native_mp4_command(session)
+        command = _native_mp4_command(session, start_sec=start_sec)
         proc = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-    except Exception as exc:
+    except Exception:
         log.exception("could not start native Canvas FFmpeg process for session=%s", session_id)
         return Response(status_code=502, content="could not start native video stream")
 
     stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
-    
+    log.info(
+        "native Canvas stream opened session=%s start=%.2fs format=%s",
+        session_id, start_sec, session.media.format_note,
+    )
     return StreamingResponse(
         _native_mp4_body(proc, session, stderr_task),
         media_type="application/octet-stream",
@@ -421,6 +491,7 @@ async def api_auth(req: AuthRequest, request: Request):
         or request.headers.get("x-forwarded-proto", "").lower() == "https"
     )
     response.headers["Set-Cookie"] = auth.cookie_header(cookie_value, secure=is_https)
+    log.info("Successful auth from %s", ip)
     return response
 
 
@@ -434,15 +505,21 @@ class PlayRequest(BaseModel):
 @app.post("/api/play")
 async def api_play(req: PlayRequest):
     preset_name = req.preset if req.preset in PRESETS else DEFAULT_PRESET
-    display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "canvas"
+    display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "ascii"
     query = _resolve_selection(req.selection or "") if req.selection else (req.query or "").strip()
     if not query:
-        return JSONResponse(status_code=400, content={"error": "Die Auswahl ist ungültig oder abgelaufen."})
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Die Auswahl ist ungültig oder abgelaufen. Bitte suche das Video erneut."},
+        )
     mgr = get_manager()
     try:
         session = await mgr.play(query, preset_name, display_mode)
     except ResolverError as exc:
-        return JSONResponse(status_code=422, content={"error": str(exc)})
+        return JSONResponse(
+            status_code=422,
+            content={"error": str(exc)},
+        )
 
     if session.state == State.PLAYING and session.media is not None:
         preset_cfg = PRESETS[session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET]
@@ -451,7 +528,6 @@ async def api_play(req: PlayRequest):
             "title": session.media.title,
             "is_live": session.media.is_live,
             "duration": session.media.duration or 0,
-            "video_id": session.media.video_id,
             "cols": preset_cfg["cols"],
             "rows": preset_cfg["rows"],
             "fps": preset_cfg["fps_cap"],
@@ -461,7 +537,10 @@ async def api_play(req: PlayRequest):
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
         }
 
-    return JSONResponse(status_code=409, content={"error": "superseded"})
+    return JSONResponse(
+        status_code=409,
+        content={"error": "session superseded by a newer play request"},
+    )
 
 
 @app.post("/api/stop")
@@ -477,14 +556,6 @@ async def api_status():
 
 async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
     preset_name = session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET
-    preset_cfg = PRESETS[preset_name]
-    preset = PresetSpec(
-        cols=preset_cfg["cols"],
-        rows=preset_cfg["rows"],
-        fps_cap=preset_cfg["fps_cap"],
-        mode=preset_cfg["mode"],
-    )
-
     await websocket.accept()
 
     pipeline = session.pipeline
@@ -495,6 +566,9 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
 
     try:
         await websocket.send_text(pipeline.init_message())
+
+        first_frame_logged = False
+        deflate_negotiated = _ws_offered_deflate(websocket)
         async for payload in pipeline.frames():
             if websocket.client_state != WebSocketState.CONNECTED:
                 break
@@ -502,8 +576,18 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
                 break
             await websocket.send_bytes(payload)
             pipeline.frames_sent += 1
+            if not first_frame_logged:
+                import zlib
+                approx = len(zlib.compress(payload, 6))
+                log.info(
+                    "first frame: raw=%d bytes deflate≈%d bytes (ratio=%.2f) preset=%s permessage-deflate=%s",
+                    len(payload), approx, approx / max(1, len(payload)),
+                    preset_name, deflate_negotiated,
+                )
+                first_frame_logged = True
+
     except (WebSocketDisconnect, ConnectionError):
-        pass
+        log.info("ws client disconnected")
     except Exception:
         log.exception("video ws error")
     finally:
@@ -514,6 +598,18 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
                 pass
 
 
+def _ws_offered_deflate(websocket: WebSocket) -> bool:
+    headers = dict(websocket.scope.get("headers") or [])
+    raw = headers.get(b"sec-websocket-extensions", b"")
+    return b"permessage-deflate" in raw.lower()
+
+
+async def _reject_ws(websocket: WebSocket, reason: str) -> None:
+    await websocket.accept()
+    await websocket.send_text(f"Error: {reason}")
+    await websocket.close()
+
+
 @app.websocket("/ws/video")
 async def ws_video(websocket: WebSocket):
     if not auth.is_authenticated(websocket.scope):
@@ -522,11 +618,11 @@ async def ws_video(websocket: WebSocket):
 
     session_id = websocket.query_params.get("session")
     if not session_id:
-        await websocket.close(code=4003)
+        await _reject_ws(websocket, "missing session id — call /api/play first")
         return
     session = get_manager().get(session_id)
     if session is None:
-        await websocket.close(code=4003)
+        await _reject_ws(websocket, f"unknown or stale session id: {session_id!r}")
         return
     await _run_video_ws(websocket, session)
 
@@ -541,20 +637,24 @@ def main() -> None:
     parser.add_argument(
         "--pin",
         default=os.environ.get("ASCIILINE_PIN"),
-        help="4–8 digit PIN",
+        help="4–8 digit PIN (or set ASCIILINE_PIN env var)",
     )
     args = parser.parse_args()
 
     check_ffmpeg()
 
     if not args.pin:
-        print("ERROR: PIN required.", file=sys.stderr)
+        print(
+            "ERROR: PIN required. Pass --pin <4-8 digits> or set ASCIILINE_PIN.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     auth.init()
     auth.set_pin(args.pin)
     init_manager(max_source_height=args.max_source_height)
 
+    print(f"ASCILINE starting on http://{args.bind}:{args.port}")
     uvicorn.run(
         app,
         host=args.bind,
