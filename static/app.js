@@ -1172,10 +1172,10 @@ state.decoder = new VideoDecoder({
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
                             
-                            // ── FIX: Ladebildschirm jetzt sofort und erzwingend ausblenden ──
+                            // ── FIX: Hartes und sauberes Ausblenden via JavaScript & CSS ──
                             if (idleOverlay) {
                                 idleOverlay.classList.add('hidden');
-                                idleOverlay.style.display = 'none'; // Erzwingt das sofortige Verschwinden
+                                idleOverlay.style.setProperty('display', 'none', 'important');
                             }
 
                             canvas.style.display = 'block';
