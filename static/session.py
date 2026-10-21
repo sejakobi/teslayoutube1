@@ -42,11 +42,17 @@ class Session:
     media: Optional[ResolvedMedia] = None
     pipeline: Optional[VideoPipeline] = None
     audio_pipeline: Optional[AudioPipeline] = None
+    # Set when the session is superseded or stopped.
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class SessionManager:
-    """Single-session lifecycle manager."""
+    """Single-session lifecycle manager.
+
+    All methods are called from asyncio tasks on a single event loop.
+    Pipeline stop() calls are dispatched as background tasks so the state
+    machine never blocks waiting for ffmpeg to exit.
+    """
 
     def __init__(self, max_source_height: int = SERVER_DEFAULTS["max_source_height"]):
         self._max_height = max_source_height
@@ -54,6 +60,12 @@ class SessionManager:
         self._lock = asyncio.Lock()
 
     async def play(self, query: str, preset_name: str, display_mode: str = "ascii") -> Session:
+        """Start a new session.
+
+        Kills the previous session, resolves the query, starts the
+        pipeline, returns a Session with state=PLAYING.  Raises
+        ResolverError if resolution fails (state set to ERROR first).
+        """
         async with self._lock:
             await self._kill_current()
 
@@ -67,6 +79,8 @@ class SessionManager:
             self._current = session
             log.info("session %s: resolving %r preset=%s", session_id, query, preset_name)
 
+        # Resolve outside the lock so a hammered Play can supersede us.
+        # Native/WebCodecs Canvas playback needs H.264 (prefer_native=True).
         requested_height = self._max_height
         if session.display_mode == "canvas":
             canvas_cfg = CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET]
@@ -101,6 +115,8 @@ class SessionManager:
                 mode=preset_cfg["mode"],
             )
 
+            # Im Canvas-Modus läuft das Video-Rendering über /media (WebCodecs/native FFmpeg in server.py).
+            # Die alte VideoPipeline wird hier nur für den reinen ASCII-Modus benötigt.
             if session.display_mode == "ascii":
                 pipeline = VideoPipeline(
                     media.video_url,
@@ -110,10 +126,17 @@ class SessionManager:
                 )
                 pipeline.start()
 
+            # Separate Audio-Pipeline für den Audiostream
             audio_src = media.audio_url if media.audio_url else media.video_url
             audio_headers = media.audio_headers if media.audio_url else media.video_headers
             audio_pipeline = AudioPipeline(audio_src, headers=audio_headers)
             audio_pipeline.start()
+            
+            if session.display_mode == "canvas":
+                log.info(
+                    "session %s: WebCodecs/Canvas mode selected; separate audio started",
+                    session_id,
+                )
 
             session.media = media
             session.pipeline = pipeline
@@ -121,8 +144,8 @@ class SessionManager:
             session.state = State.PLAYING
 
             log.info(
-                "session %s: playing %r is_live=%s duration=%s title=%r",
-                session_id, query, media.is_live, media.duration, media.title,
+                "session %s: playing %r is_live=%s title=%r",
+                session_id, query, media.is_live, media.title,
             )
 
         return session
@@ -157,13 +180,16 @@ class SessionManager:
         if sess.media:
             result["title"] = sess.media.title
             result["is_live"] = sess.media.is_live
-            result["duration"] = sess.media.duration or 0
         else:
             result["title"] = None
-            result["duration"] = 0
         return result
 
     async def _kill_current(self) -> None:
+        """Signal the current session to stop and dispatch teardown.
+
+        Must be called with self._lock held.  Returns immediately; the
+        teardown task runs concurrently so callers are not delayed.
+        """
         sess = self._current
         if sess is None:
             return
@@ -179,6 +205,7 @@ class SessionManager:
         self._current = None
 
     def stop_sync(self) -> None:
+        """Synchronous teardown for atexit / signal handlers."""
         sess = self._current
         if sess is None:
             return
