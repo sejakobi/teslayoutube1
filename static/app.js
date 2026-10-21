@@ -1,18 +1,15 @@
 // ASCILINE YouTube streamer — Tesla browser frontend (Cleaned WebAudio & WebCodecs Canvas Edition).
-// Features: Infinite Scroll, Channel Search, Stealth Transport Controls, Audio/Video Sync, Tesla setInterval Fix
+// Features: Tesla setInterval Fix, Pure WebAudio, Absolute Sync, Infinite Scroll
 
 'use strict';
 
-// ───────── DOM Elements ─────────
-const queryInput          = document.getElementById('search-query') || document.getElementById('query-input');
+const queryInput          = document.getElementById('query-input');
 const btnPlay             = document.getElementById('btn-play');
-const btnSearch           = document.getElementById('search-button') || document.getElementById('btn-search');
+const btnSearch           = document.getElementById('btn-search');
 const btnCloseSearch      = document.getElementById('btn-close-search');
 const searchPanel         = document.getElementById('search-panel');
 const searchResults       = document.getElementById('search-results');
 const searchMessage       = document.getElementById('search-message');
-const tabVideos           = document.getElementById('tab-videos');
-const tabChannels         = document.getElementById('tab-channels');
 const btnStop             = document.getElementById('btn-stop');
 const presetBtns          = document.querySelectorAll('.preset-btn');
 const displayModeBtns     = document.querySelectorAll('.display-mode-btn');
@@ -32,28 +29,20 @@ const playbackProgress    = document.getElementById('playback-progress');
 const playbackCurrentTime = document.getElementById('playback-current-time');
 const playbackDuration    = document.getElementById('playback-duration');
 
-// Channel Banner & Scroll
-const channelBanner       = document.getElementById('channel-banner');
-const channelAvatar       = document.getElementById('channel-banner-avatar');
-const channelTitle        = document.getElementById('channel-banner-title');
-const channelDesc         = document.getElementById('channel-banner-desc');
-const btnCloseChannel     = document.getElementById('btn-close-channel');
-const scrollSentinel      = document.getElementById('scroll-sentinel');
-const scrollLoader        = document.getElementById('scroll-loader');
-
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
 const statusState = document.getElementById('status-state');
 const statusFps   = document.getElementById('status-fps');
 const statusPerf  = document.getElementById('status-perf-hint');
 
-// ───────── Global State ─────────
-let webCodecsState    = null;
-let audioContext      = null;
-let audioGainNode     = null;
+// Canvas/WebCodecs & WebAudio State
+let webCodecsState = null;
+let audioContext = null;
+let audioGainNode = null;
 let customAudioReader = null;
-let activeAudioNodes  = [];
-let nextAudioTime     = 0;
+let activeAudioNodes = [];
+let nextAudioTime = 0;
+let totalDecodedAudioDuration = 0; // Neu: Zählt die exakte Länge des verarbeiteten Audios
 
 let appState            = 'idle'; // idle | resolving | playing | error
 let ws                  = null;
@@ -65,22 +54,13 @@ let selectedDisplayMode = 'canvas';
 let canvasVideoMode     = false;
 let lastCanvasFrameIndex = -1;
 
-// Playback Time & Seek State
+// Wiedergabe-Zeit & Pause-Status für den Fortschrittsbalken
 let mediaDurationSec  = 0;
 let mediaIsLive       = false;
 let seekBaseSeconds   = 0;
 let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
-
-// Search State
-const STORAGE_KEY       = 'asciline_search_state_v1';
-let searchRequestNo     = 0;
-let currentSearchType   = 'video';
-let activeChannel       = null;
-let nextPageToken       = '';
-let isFetchingMore      = false;
-let totalLoaded         = 0;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -112,250 +92,7 @@ let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
-// ───────── Search & Infinite Scroll Logic ─────────
-function saveSearchState() {
-    try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
-            query: queryInput ? queryInput.value.trim() : '',
-            searchType: currentSearchType,
-            activeChannel: activeChannel,
-        }));
-    } catch (_) {}
-}
-
-function loadSearchState() {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        return raw ? JSON.parse(raw) : null;
-    } catch (_) { return null; }
-}
-
-function updateFilterUI() {
-    const isChanView = Boolean(activeChannel);
-    if (tabVideos) tabVideos.classList.toggle('active', !isChanView && currentSearchType === 'video');
-    if (tabChannels) tabChannels.classList.toggle('active', !isChanView && currentSearchType === 'channel');
-
-    if (isChanView && channelBanner) {
-        channelBanner.classList.remove('hidden');
-        if (channelTitle) channelTitle.textContent = activeChannel.title || 'YouTube-Kanal';
-        if (channelDesc) channelDesc.textContent = activeChannel.description || 'Alle öffentlichen Uploads dieses Kanals';
-        if (channelAvatar && activeChannel.thumbnail) {
-            channelAvatar.src = activeChannel.thumbnail;
-            channelAvatar.classList.remove('hidden');
-        } else if (channelAvatar) {
-            channelAvatar.classList.add('hidden');
-        }
-        if (document.getElementById('results-title')) document.getElementById('results-title').textContent = `Videos von ${activeChannel.title}`;
-    } else {
-        if (channelBanner) channelBanner.classList.add('hidden');
-        if (document.getElementById('results-title')) document.getElementById('results-title').textContent = currentSearchType === 'channel' ? 'Gefundene Kanäle' : 'Suchergebnisse';
-    }
-}
-
-function createVideoCard(item) {
-    const card = document.createElement('div');
-    card.className = 'result';
-
-    const wrap = document.createElement('div');
-    wrap.className = 'thumb-wrap';
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.alt = '';
-    img.src = item.thumbnail || '';
-    wrap.append(img);
-
-    const mark = document.createElement('span');
-    mark.className = 'playmark';
-    mark.textContent = '▶';
-    wrap.append(mark);
-
-    const openVideo = () => {
-        if (item.selection) {
-            saveSearchState();
-            location.href = '/watch?selection=' + encodeURIComponent(item.selection);
-        }
-    };
-    wrap.addEventListener('click', openVideo);
-
-    const body = document.createElement('div');
-    body.className = 'result-body';
-
-    const t = document.createElement('div');
-    t.className = 'result-title';
-    t.textContent = item.title || 'Unbenanntes Video';
-    t.addEventListener('click', openVideo);
-
-    const chBtn = document.createElement('button');
-    chBtn.type = 'button';
-    chBtn.className = 'result-channel-btn';
-    chBtn.textContent = '📺 ' + (item.channel || 'Unbekannter Kanal');
-    chBtn.title = 'Alle Videos dieses Kanals anzeigen';
-    chBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (item.channel_id) {
-            openChannelView({
-                channel_id: item.channel_id,
-                title: item.channel || 'YouTube-Kanal',
-                description: '',
-                thumbnail: '',
-            });
-        }
-    });
-
-    const meta = document.createElement('div');
-    meta.className = 'result-meta';
-    const m1 = document.createElement('span');
-    m1.textContent = item.published_at ? new Date(item.published_at).toLocaleDateString('de-DE') : 'VIDEO';
-    const m2 = document.createElement('span');
-    m2.textContent = 'CANVAS STREAM ↗';
-    meta.append(m1, m2);
-
-    body.append(t, chBtn, meta);
-    card.append(wrap, body);
-    return card;
-}
-
-function createChannelCard(item) {
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'channel-card';
-
-    const avatarWrap = document.createElement('div');
-    avatarWrap.className = 'channel-avatar-wrap';
-    if (item.thumbnail) {
-        const img = document.createElement('img');
-        img.loading = 'lazy';
-        img.alt = '';
-        img.src = item.thumbnail;
-        avatarWrap.append(img);
-    }
-
-    const body = document.createElement('div');
-    body.className = 'channel-card-body';
-
-    const name = document.createElement('div');
-    name.className = 'channel-card-title';
-    name.textContent = item.title || item.channel || 'Unbekannter Kanal';
-
-    const desc = document.createElement('div');
-    desc.className = 'channel-card-desc';
-    desc.textContent = item.description || 'Kanal öffnen, um die neuesten Videos zu durchsuchen.';
-
-    const cta = document.createElement('div');
-    cta.className = 'channel-card-cta';
-    cta.textContent = '▶ KANAL-VIDEOS ANZEIGEN';
-
-    body.append(name, desc, cta);
-    card.append(avatarWrap, body);
-
-    card.addEventListener('click', () => {
-        openChannelView({
-            channel_id: item.channel_id,
-            title: item.title || item.channel || 'YouTube-Kanal',
-            description: item.description || '',
-            thumbnail: item.thumbnail || '',
-        });
-    });
-
-    return card;
-}
-
-async function runSearch({ append = false } = {}) {
-    const q = queryInput ? queryInput.value.trim() : '';
-    if (!q && !activeChannel) return;
-    if (append && (!nextPageToken || isFetchingMore)) return;
-
-    const id = append ? searchRequestNo : ++searchRequestNo;
-    isFetchingMore = true;
-
-    if (!append) {
-        if (btnSearch) btnSearch.disabled = true;
-        if (searchResults) searchResults.replaceChildren();
-        nextPageToken = '';
-        totalLoaded = 0;
-        if (searchMessage) {
-            searchMessage.className = 'message loading';
-            searchMessage.textContent = activeChannel ? 'Kanalvideos werden geladen …' : 'Suche läuft …';
-        }
-        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'LOADING';
-        updateFilterUI();
-        saveSearchState();
-    } else {
-        if (scrollLoader) scrollLoader.classList.remove('hidden');
-    }
-
-    try {
-        const params = new URLSearchParams();
-        if (activeChannel) {
-            params.set('search_type', 'video');
-            params.set('channel_id', activeChannel.channel_id);
-            params.set('max_results', '24');
-        } else {
-            params.set('q', q);
-            params.set('search_type', currentSearchType);
-            params.set('max_results', '24');
-        }
-        if (append && nextPageToken) {
-            params.set('page_token', nextPageToken);
-        }
-
-        const r = await fetch('/api/search?' + params.toString(), {
-            headers: { 'Accept': 'application/json' },
-        });
-        const data = await r.json();
-        if (id !== searchRequestNo) return;
-        if (!r.ok) {
-            if (r.status === 403) throw new Error('Bitte zuerst mit deiner PIN anmelden und erneut suchen.');
-            throw new Error(data.error || `Suche fehlgeschlagen (${r.status})`);
-        }
-
-        const items = data.results || [];
-        nextPageToken = data.next_page_token || '';
-        totalLoaded += items.length;
-
-        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = String(totalLoaded).padStart(2, '0') + ' ITEMS';
-        if (searchMessage) searchMessage.className = 'message';
-
-        if (!append && !items.length) {
-            if (searchMessage) searchMessage.textContent = 'Keine passenden Ergebnisse gefunden.';
-            return;
-        }
-
-        if (searchMessage) {
-            searchMessage.textContent = nextPageToken
-                ? `${totalLoaded} Ergebnisse geladen · Scrolle nach unten für mehr`
-                : `${totalLoaded} Ergebnisse geladen · Alle Ergebnisse angezeigt`;
-        }
-
-        if (searchResults) {
-            for (const item of items) {
-                if (item.result_type === 'channel') searchResults.append(createChannelCard(item));
-                else searchResults.append(createVideoCard(item));
-            }
-        }
-    } catch (err) {
-        if (id === searchRequestNo && searchMessage) {
-            searchMessage.className = 'message';
-            searchMessage.textContent = err.message || 'Die Suche ist fehlgeschlagen.';
-            if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'ERROR';
-        }
-    } finally {
-        if (id === searchRequestNo) {
-            if (btnSearch) btnSearch.disabled = false;
-            isFetchingMore = false;
-            if (scrollLoader) scrollLoader.classList.add('hidden');
-        }
-    }
-}
-
-function openChannelView(channelObj) {
-    activeChannel = channelObj;
-    updateFilterUI();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    void runSearch({ append: false });
-}
-
-// ───────── Custom Transport Controls (Play/Pause & Seek) ─────────
+// ───────── Hilfsfunktionen für Zeit & Fortschrittsbalken ─────────
 function formatPlaybackTime(seconds) {
     if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
     seconds = Math.floor(seconds);
@@ -445,7 +182,18 @@ if (playbackProgress) {
     });
 }
 
-// ───────── Preset & Mode Selection ─────────
+canvas.addEventListener('click', () => {
+    if (appState === 'playing' && canvasVideoMode) {
+        if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
+            audioContext.resume().catch(() => {});
+            statusPerf.classList.add('hidden');
+            return;
+        }
+        void toggleCustomPause();
+    }
+});
+
+// ───────── Preset & Mode Auswahl ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const p = btn.dataset.preset;
@@ -471,40 +219,34 @@ displayModeBtns.forEach(btn => {
 });
 
 function updateConfigHint() {
-    if (presetHint && (appState === 'playing' || appState === 'resolving')) {
+    if (appState === 'playing' || appState === 'resolving') {
         presetHint.textContent = 'Änderungen werden beim nächsten PLAY übernommen';
         presetHint.classList.remove('hidden');
     }
 }
 
-// ───────── Volume / Mute ─────────
+// ───────── Lautstärke / Stummschaltung (Reines WebAudio) ─────────
 let isMuted = false;
 
-if (volumeSlider) {
-    volumeSlider.addEventListener('input', () => {
-        const volume = parseFloat(volumeSlider.value);
-        if (audioGainNode) audioGainNode.gain.value = volume;
-        isMuted = volume === 0;
-        updateMuteBtn();
-    });
-}
+volumeSlider.addEventListener('input', () => {
+    const volume = parseFloat(volumeSlider.value);
+    if (audioGainNode) audioGainNode.gain.value = volume;
+    isMuted = volume === 0;
+    updateMuteBtn();
+});
 
-if (btnMute) {
-    btnMute.addEventListener('click', () => {
-        isMuted = !isMuted;
-        if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider ? volumeSlider.value : 1);
-        updateMuteBtn();
-    });
-}
+btnMute.addEventListener('click', () => {
+    isMuted = !isMuted;
+    if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
+    updateMuteBtn();
+});
 
 function updateMuteBtn() {
-    if (btnMute) {
-        btnMute.textContent = isMuted ? '🔇' : '🔊';
-        btnMute.classList.toggle('muted', isMuted);
-    }
+    btnMute.textContent = isMuted ? '🔇' : '🔊';
+    btnMute.classList.toggle('muted', isMuted);
 }
 
-// ───────── Unvisibles Web-Audio (Ohne HTML-Tags) ─────────
+// ───────── Unsichtbares WebAudio-Streaming (Ohne <audio>-Tag) ─────────
 function stopCustomWebAudio() {
     if (customAudioReader) {
         try { customAudioReader.cancel(); } catch (_) {}
@@ -515,6 +257,7 @@ function stopCustomWebAudio() {
     }
     activeAudioNodes = [];
     nextAudioTime = 0;
+    totalDecodedAudioDuration = 0; // WICHTIG: Audiolänge beim Stoppen zurücksetzen
     if (audioContext && audioContext.state !== 'closed') {
         audioContext.suspend().catch(() => {});
     }
@@ -530,7 +273,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         audioGainNode = audioContext.createGain();
         audioGainNode.connect(audioContext.destination);
     }
-    audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider ? volumeSlider.value : 1);
+    audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
     if (audioContext.state === 'suspended' && !isPlaybackPaused) {
         await audioContext.resume().catch(() => {});
     }
@@ -541,6 +284,8 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         if (!res.ok || !res.body) return;
         const reader = res.body.getReader();
         customAudioReader = reader;
+        
+        // Einen kleinen Puffer-Vorsprung für Audio geben
         nextAudioTime = audioContext.currentTime + 0.12;
 
         let leftover = new Uint8Array(0);
@@ -576,6 +321,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                 }
                 src.start(nextAudioTime);
                 nextAudioTime += audioBuffer.duration;
+                totalDecodedAudioDuration += audioBuffer.duration; // Die exakte Dauer aufsummieren
             }).catch(() => {});
         }
     } catch (e) {
@@ -587,14 +333,14 @@ async function startHiddenWebAudio(sid, startSec = 0) {
 function buildCanvas(cols, rows) {
     gridCols = cols;
     gridRows = rows;
+
     const syncSize = (el) => {
-        if (!playerContainer) return;
-        el.style.width     = playerContainer.clientWidth  + 'px';
-        el.style.height    = playerContainer.clientHeight + 'px';
+        el.style.width    = playerContainer.clientWidth  + 'px';
+        el.style.height   = playerContainer.clientHeight + 'px';
         el.style.objectFit = 'contain';
         el.style.position  = 'absolute';
-        el.style.top       = '0';
-        el.style.left      = '0';
+        el.style.top  = '0';
+        el.style.left = '0';
     };
 
     if (pixelMode) {
@@ -606,7 +352,7 @@ function buildCanvas(cols, rows) {
         const d = dotImageData.data;
         for (let i = 3; i < d.length; i += 4) d[i] = 255;
         syncSize(canvas);
-        if (asciiPlayer) asciiPlayer.style.display = 'none';
+        asciiPlayer.style.display = 'none';
         return;
     }
 
@@ -624,22 +370,21 @@ function buildCanvas(cols, rows) {
 
     syncSize(canvas);
 
-    if (asciiPlayer && playerContainer) {
-        const cw = playerContainer.clientWidth;
-        const ch = playerContainer.clientHeight;
-        const fs = Math.min(cw / canvas.width, ch / canvas.height);
-        const ox = (cw - canvas.width  * fs) / 2;
-        const oy = (ch - canvas.height * fs) / 2;
-        asciiPlayer.style.width  = canvas.width  + 'px';
-        asciiPlayer.style.height = canvas.height + 'px';
-        asciiPlayer.style.position = 'absolute';
-        asciiPlayer.style.top  = '0';
-        asciiPlayer.style.left = '0';
-        asciiPlayer.style.transformOrigin = 'top left';
-        asciiPlayer.style.transform  = `translate(${ox}px,${oy}px) scale(${fs})`;
-        asciiPlayer.style.fontSize   = '8px';
-        asciiPlayer.style.lineHeight = '8px';
-    }
+    const cw = playerContainer.clientWidth;
+    const ch = playerContainer.clientHeight;
+    const fs = Math.min(cw / canvas.width, ch / canvas.height);
+    const ox = (cw - canvas.width  * fs) / 2;
+    const oy = (ch - canvas.height * fs) / 2;
+
+    asciiPlayer.style.width  = canvas.width  + 'px';
+    asciiPlayer.style.height = canvas.height + 'px';
+    asciiPlayer.style.position = 'absolute';
+    asciiPlayer.style.top  = '0';
+    asciiPlayer.style.left = '0';
+    asciiPlayer.style.transformOrigin = 'top left';
+    asciiPlayer.style.transform  = `translate(${ox}px,${oy}px) scale(${fs})`;
+    asciiPlayer.style.fontSize   = '8px';
+    asciiPlayer.style.lineHeight = '8px';
 
     ctx.font         = 'bold 8px Courier New';
     ctx.textBaseline = 'top';
@@ -660,15 +405,13 @@ function buildVideoCanvas(width, height) {
     canvas.style.imageRendering = 'auto';
     canvas.style.position = 'absolute';
     canvas.style.objectFit = 'contain';
-    if (asciiPlayer) {
-        asciiPlayer.style.display = 'none';
-        asciiPlayer.textContent = '';
-    }
+    asciiPlayer.style.display = 'none';
+    asciiPlayer.textContent = '';
     layoutVideoCanvas();
 }
 
 function layoutVideoCanvas() {
-    if (!canvasVideoMode || !canvas.width || !canvas.height || !playerContainer) return;
+    if (!canvasVideoMode || !canvas.width || !canvas.height) return;
     const cw = playerContainer.clientWidth;
     const ch = playerContainer.clientHeight;
     const scale = Math.min(cw / canvas.width, ch / canvas.height);
@@ -689,12 +432,105 @@ function clearFrameBuffer() {
     frameBuffer.length = 0;
 }
 
-// ───────── WebCodecs Video Decoder → Visible Canvas (Tesla Fix) ─────────
+// ───────── ASCII Render Loop ─────────
+function renderFrame(now) {
+    if (appState !== 'playing' || !readyToRender) return;
+    requestAnimationFrame(renderFrame);
+
+    if (frameBuffer.length === 0) return;
+
+    if (!clockAnchored) {
+        streamStartTime = now - frameBuffer[0].time * 1000 - PRESENT_LEAD_MS;
+        clockAnchored   = true;
+    }
+    const masterClock = (now - streamStartTime) / 1000.0;
+
+    while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
+        const stale = frameBuffer.shift();
+        if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
+    }
+    if (frameBuffer[0].time > masterClock + 0.05) return;
+
+    const frameObj = frameBuffer.shift();
+    const frame    = frameObj.data;
+
+    frameCount++;
+    if (lastPaintTime > 0) {
+        const gap = now - lastPaintTime;
+        if (gap > maxPaintInterval) maxPaintInterval = gap;
+    }
+    lastPaintTime = now;
+
+    if (now - lastFpsUpdate >= 1000) {
+        measuredFps      = frameCount;
+        frameCount       = 0;
+        lastFpsUpdate    = now;
+        const jitter     = Math.round(maxPaintInterval);
+        maxPaintInterval = 0;
+        statusFps.textContent = `FPS ${measuredFps}/${Math.round(targetFps)}  JIT ${jitter}ms  BUF ${frameBuffer.length}`;
+    }
+
+    if (canvasVideoMode) {
+        if (frame && typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
+            lastCanvasFrameIndex = Math.max(lastCanvasFrameIndex, frameObj.index ?? -1);
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            frame.close();
+        }
+        return;
+    }
+
+    if (renderMode === 1) {
+        asciiPlayer.style.display = 'block';
+        asciiPlayer.style.color   = '#fff';
+        asciiPlayer.textContent   = frame;
+        return;
+    }
+    if (pixelMode) {
+        const view = frame;
+        const data = dotImageData.data;
+        for (let src = 0, dst = 0; src < view.length; src += 3, dst += 4) {
+            data[dst]     = view[src + 2];
+            data[dst + 1] = view[src + 1];
+            data[dst + 2] = view[src];
+        }
+        ctx.putImageData(dotImageData, 0, 0);
+        return;
+    }
+
+    const view   = frame;
+    const buf    = selectionBuffer;
+    const stride = gridCols + 1;
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.font         = 'bold 8px Courier New';
+    ctx.textBaseline = 'top';
+    let col = 0, row = 0, prevPacked = -1;
+    for (let idx = 0; idx < view.length; idx += 4) {
+        const ch = view[idx];
+        const r  = view[idx + 1];
+        const g  = view[idx + 2];
+        const b  = view[idx + 3];
+        const packed = (r << 16) | (g << 8) | b;
+        if (packed !== prevPacked) {
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            prevPacked = packed;
+        }
+        ctx.fillText(CHAR_LUT[ch], xPos[col], yPos[row]);
+        buf[row * stride + col] = ch;
+        col++;
+        if (col >= gridCols) { col = 0; row++; }
+    }
+    asciiPlayer.style.display = 'block';
+    asciiPlayer.style.color   = 'transparent';
+}
+
+// ───────── WebCodecs Video Decoder → Visible Canvas ─────────
 function stopNativeCanvasSource() {
     const state = webCodecsState;
     webCodecsState = null;
     if (state) {
         state.stopped = true;
+        // WICHTIG: clearInterval nutzen, da wir auf setInterval gewechselt haben!
         if (state.raf) clearInterval(state.raf);
         if (state.reader) state.reader.cancel().catch(() => {});
         if (state.decoder) {
@@ -762,8 +598,9 @@ function pumpSampleQueue(state) {
 function startWebCodecsDrawLoop(state) {
     if (state.raf || state.stopped) return;
     
-    // Tesla Fix: setInterval statt requestAnimationFrame
+    // Wir nutzen setInterval (ca. 30 FPS), da requestAnimationFrame im Tesla-Hintergrund gedrosselt wird
     const intervalMs = 1000 / 30;
+    
     state.raf = setInterval(() => {
         const now = performance.now();
         if (state.stopped || webCodecsState !== state || appState !== 'playing') {
@@ -776,32 +613,37 @@ function startWebCodecsDrawLoop(state) {
         }
 
         if (!isPlaybackPaused && state.frames.length > 0) {
-            if (state.playbackStart === null && state.frames.length) {
+            if (state.playbackStart === null) {
                 state.playbackStart = now - (state.frames[0].timestamp / 1000);
             }
-            let videoClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
+            let videoClock = (now - state.playbackStart) / 1000;
 
-            // Audio-Sync Korrektur
+            // KORREKTE AUDIO-SYNC: Vergleicht echte Audio-Dauer mit dem Video-Clock
             if (audioContext && audioContext.state === 'running' && nextAudioTime > 0) {
-                const estimatedAudioTime = (audioContext.currentTime - (nextAudioTime - (state.lastPresentedTime || 0)));
-                const syncDiff = videoClock - estimatedAudioTime;
+                const queuedAudio = Math.max(0, nextAudioTime - audioContext.currentTime);
+                const playedAudio = totalDecodedAudioDuration - queuedAudio;
+                
+                const syncDiff = videoClock - playedAudio;
                 if (Math.abs(syncDiff) > 0.15) {
                     state.playbackStart += syncDiff * 1000;
                     videoClock = (now - state.playbackStart) / 1000;
                 }
             }
 
+            // Schutz gegen extreme Lags / Zeit-Sprünge
             const firstFrameSec = state.frames.length > 0 ? state.frames[0].timestamp / 1e6 : 0;
             if (state.frames.length > 0 && Math.abs(firstFrameSec - videoClock) > 1.5) {
                 state.playbackStart = now - (state.frames[0].timestamp / 1000);
             }
             const adjustedClock = state.playbackStart === null ? 0 : (now - state.playbackStart) / 1000;
 
+            // Alte Frames verwerfen
             while (state.frames.length > 1 && state.frames[1].timestamp / 1e6 <= adjustedClock + 0.02) {
                 const older = state.frames.shift();
                 try { older.close(); } catch (_) {}
             }
 
+            // Canvas zeichnen
             if (state.frames.length > 0 && (state.drawn === 0 || state.frames[0].timestamp / 1e6 <= adjustedClock + 0.05)) {
                 const frame = state.frames.shift();
                 try {
@@ -851,24 +693,9 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
 
     stopNativeCanvasSource();
     const state = {
-        stopped: false,
-        file: null,
-        decoder: null,
-        reader: null,
-        raf: 0,
-        frames: [],
-        sampleQueue: [],
-        gotFirstKeyframe: false,
-        playbackStart: null,
-        drawn: 0,
-        fpsStart: 0,
-        lastPresentedTime: 0,
-        started: false,
-        track: null,
-        timescale: 1,
-        timestampBase: null,
-        sampleCount: 0,
-        decoderConfigured: false,
+        stopped: false, file: null, decoder: null, reader: null, raf: 0,
+        frames: [], sampleQueue: [], gotFirstKeyframe: false, playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
+        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false,
     };
     webCodecsState = state;
     setStatus('BUFFERING · WEBCODECS', 'resolving');
@@ -964,7 +791,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         state.reader = response.body.getReader();
         let fileStart = 0;
         while (!state.stopped) {
-            // Flow-Control
             while (!state.stopped && (state.sampleQueue.length > 60 || state.frames.length > 20)) {
                 pumpSampleQueue(state);
                 await new Promise(r => setTimeout(r, 40));
@@ -987,6 +813,95 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     } catch (err) {
         if (!state.stopped) setError(`Canvas/WebCodecs: ${err.message || err}`);
     }
+}
+
+// ───────── WebSocket (ASCII Mode) ─────────
+function connectWs(sid) {
+    clearFrameBuffer();
+    canvasVideoMode = false;
+    lastCanvasFrameIndex = -1;
+    frameCount        = 0;
+    measuredFps       = 0;
+    fpsWindowFrames   = 0;
+    fpsWindowStart    = 0;
+    fpsBelowThreshold = false;
+    readyToRender     = false;
+    clockAnchored     = false;
+    lastPaintTime     = 0;
+    maxPaintInterval  = 0;
+    if (playbackControls) playbackControls.classList.add('hidden');
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => setStatus('BUFFERING', 'resolving');
+
+    ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+            if (event.data.startsWith('Error:')) {
+                setError(event.data.replace(/^Error:\s*/, ''));
+                closeWs();
+                return;
+            }
+            if (event.data.startsWith('CANVAS_INIT:') || event.data.startsWith('INIT:')) {
+                wsRetryCount = 0;
+                const p = event.data.split(':');
+                targetFps = parseFloat(p[1]);
+                if (event.data.startsWith('CANVAS_INIT:')) {
+                    buildVideoCanvas(parseInt(p[2], 10), parseInt(p[3], 10));
+                } else {
+                    renderMode = parseInt(p[2]);
+                    pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
+                    buildCanvas(parseInt(p[3]), parseInt(p[4]));
+                }
+                setStatus('PLAYING', 'playing');
+                if (idleOverlay) idleOverlay.classList.add('hidden');
+                
+                void startHiddenWebAudio(sid, 0);
+                readyToRender = true;
+                lastFpsUpdate = performance.now();
+                fpsWindowStart = lastFpsUpdate;
+                requestAnimationFrame(renderFrame);
+                return;
+            }
+            const nl  = event.data.indexOf('\n');
+            const idx = parseInt(event.data.substring(0, nl));
+            frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
+        } else {
+            const view = new DataView(event.data);
+            const idx  = view.getUint32(0, false);
+            frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
+        }
+        while (frameBuffer.length > FRAME_BUFFER_MAX) {
+            const dropped = frameBuffer.shift();
+            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
+        }
+    };
+
+    ws.onclose = (evt) => {
+        if (appState !== 'playing' || evt.code === 1000 || evt.code === 4003) {
+            if (appState === 'playing') {
+                setStatus('ENDED', 'idle');
+                finishPlayback();
+            }
+            return;
+        }
+        wsRetryCount++;
+        if (wsRetryCount > WS_MAX_RETRIES) {
+            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
+            finishPlayback();
+            return;
+        }
+        const delay = wsRetryCount * 1000;
+        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
+        wsRetryTimer = setTimeout(() => {
+            wsRetryTimer = null;
+            if (appState === 'playing' && sessionId === sid) connectWs(sid);
+        }, delay);
+    };
+
+    ws.onerror = () => {};
 }
 
 // ───────── Control API ─────────
@@ -1053,7 +968,7 @@ async function doPlay(resumeAtSec = 0) {
             Number(resumeAtSec) || 0
         );
     } else {
-        connectWs(sessionId); // ASCII Mode Fallback
+        connectWs(sessionId); 
     }
     startPoll();
 }
@@ -1163,190 +1078,6 @@ function closeWs() {
     ws = null;
 }
 
-// ───────── ASCII Fallback Rendering ─────────
-function renderFrame(now) {
-    if (appState !== 'playing' || !readyToRender) return;
-    requestAnimationFrame(renderFrame);
-
-    if (frameBuffer.length === 0) return;
-
-    if (!clockAnchored) {
-        streamStartTime = now - frameBuffer[0].time * 1000 - PRESENT_LEAD_MS;
-        clockAnchored   = true;
-    }
-    const masterClock = (now - streamStartTime) / 1000.0;
-
-    while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
-        const stale = frameBuffer.shift();
-        if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
-    }
-    if (frameBuffer[0].time > masterClock + 0.05) return;
-
-    const frameObj = frameBuffer.shift();
-    const frame    = frameObj.data;
-
-    frameCount++;
-    if (lastPaintTime > 0) {
-        const gap = now - lastPaintTime;
-        if (gap > maxPaintInterval) maxPaintInterval = gap;
-    }
-    lastPaintTime = now;
-
-    if (now - lastFpsUpdate >= 1000) {
-        measuredFps      = frameCount;
-        frameCount       = 0;
-        lastFpsUpdate    = now;
-        const jitter     = Math.round(maxPaintInterval);
-        maxPaintInterval = 0;
-        if (statusFps) statusFps.textContent = `FPS ${measuredFps}/${Math.round(targetFps)}  JIT ${jitter}ms  BUF ${frameBuffer.length}`;
-    }
-
-    if (canvasVideoMode) {
-        if (frame && typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
-            lastCanvasFrameIndex = Math.max(lastCanvasFrameIndex, frameObj.index ?? -1);
-            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-            frame.close();
-        }
-        return;
-    }
-
-    if (renderMode === 1) {
-        if (asciiPlayer) {
-            asciiPlayer.style.display = 'block';
-            asciiPlayer.style.color   = '#fff';
-            asciiPlayer.textContent   = frame;
-        }
-        return;
-    }
-    if (pixelMode) {
-        const view = frame;
-        const data = dotImageData.data;
-        for (let src = 0, dst = 0; src < view.length; src += 3, dst += 4) {
-            data[dst]     = view[src + 2];
-            data[dst + 1] = view[src + 1];
-            data[dst + 2] = view[src];
-        }
-        ctx.putImageData(dotImageData, 0, 0);
-        return;
-    }
-
-    const view   = frame;
-    const buf    = selectionBuffer;
-    const stride = gridCols + 1;
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.font         = 'bold 8px Courier New';
-    ctx.textBaseline = 'top';
-    let col = 0, row = 0, prevPacked = -1;
-    for (let idx = 0; idx < view.length; idx += 4) {
-        const ch = view[idx];
-        const r  = view[idx + 1];
-        const g  = view[idx + 2];
-        const b  = view[idx + 3];
-        const packed = (r << 16) | (g << 8) | b;
-        if (packed !== prevPacked) {
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
-            prevPacked = packed;
-        }
-        ctx.fillText(CHAR_LUT[ch], xPos[col], yPos[row]);
-        buf[row * stride + col] = ch;
-        col++;
-        if (col >= gridCols) { col = 0; row++; }
-    }
-    if (asciiPlayer) {
-        asciiPlayer.style.display = 'block';
-        asciiPlayer.style.color   = 'transparent';
-    }
-}
-
-function connectWs(sid) {
-    clearFrameBuffer();
-    canvasVideoMode = false;
-    lastCanvasFrameIndex = -1;
-    frameCount        = 0;
-    measuredFps       = 0;
-    fpsWindowFrames   = 0;
-    fpsWindowStart    = 0;
-    fpsBelowThreshold = false;
-    readyToRender     = false;
-    clockAnchored     = false;
-    lastPaintTime     = 0;
-    maxPaintInterval  = 0;
-    if (playbackControls) playbackControls.classList.add('hidden');
-
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}/ws/video?session=${encodeURIComponent(sid)}`);
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => setStatus('BUFFERING', 'resolving');
-
-    ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-            if (event.data.startsWith('Error:')) {
-                setError(event.data.replace(/^Error:\s*/, ''));
-                closeWs();
-                return;
-            }
-            if (event.data.startsWith('CANVAS_INIT:') || event.data.startsWith('INIT:')) {
-                wsRetryCount = 0;
-                const p = event.data.split(':');
-                targetFps = parseFloat(p[1]);
-                if (event.data.startsWith('CANVAS_INIT:')) {
-                    buildVideoCanvas(parseInt(p[2], 10), parseInt(p[3], 10));
-                } else {
-                    renderMode = parseInt(p[2]);
-                    pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
-                    buildCanvas(parseInt(p[3]), parseInt(p[4]));
-                }
-                setStatus('PLAYING', 'playing');
-                if (idleOverlay) idleOverlay.classList.add('hidden');
-                
-                void startHiddenWebAudio(sid, 0);
-                readyToRender = true;
-                lastFpsUpdate = performance.now();
-                fpsWindowStart = lastFpsUpdate;
-                requestAnimationFrame(renderFrame);
-                return;
-            }
-            const nl  = event.data.indexOf('\n');
-            const idx = parseInt(event.data.substring(0, nl));
-            frameBuffer.push({ data: event.data.substring(nl + 1), time: idx / targetFps });
-        } else {
-            const view = new DataView(event.data);
-            const idx  = view.getUint32(0, false);
-            frameBuffer.push({ data: new Uint8Array(event.data, 4), time: idx / targetFps });
-        }
-        while (frameBuffer.length > FRAME_BUFFER_MAX) {
-            const dropped = frameBuffer.shift();
-            if (dropped && dropped.data && typeof ImageBitmap !== 'undefined' && dropped.data instanceof ImageBitmap) dropped.data.close();
-        }
-    };
-
-    ws.onclose = (evt) => {
-        if (appState !== 'playing' || evt.code === 1000 || evt.code === 4003) {
-            if (appState === 'playing') {
-                setStatus('ENDED', 'idle');
-                finishPlayback();
-            }
-            return;
-        }
-        wsRetryCount++;
-        if (wsRetryCount > WS_MAX_RETRIES) {
-            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
-            finishPlayback();
-            return;
-        }
-        const delay = wsRetryCount * 1000;
-        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
-        wsRetryTimer = setTimeout(() => {
-            wsRetryTimer = null;
-            if (appState === 'playing' && sessionId === sid) connectWs(sid);
-        }, delay);
-    };
-
-    ws.onerror = () => {};
-}
-
 const flushSelectionLayer = () => {
     if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
     if (asciiPlayer) asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
@@ -1368,8 +1099,12 @@ if (location.pathname === '/watch') {
     const params = new URLSearchParams(location.search);
     const selection = params.get('selection');
     if (btnPlay) btnPlay.classList.add('hidden');
-    if (btnSearch) btnSearch.classList.add('hidden');
+    
+    // Verstecke die Such-Elemente, falls sie auf watch.html noch existieren
+    const qs = document.getElementById('btn-search');
+    if (qs) qs.classList.add('hidden');
     if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
+    
     if (btnStop) {
         btnStop.classList.remove('hidden');
         btnStop.addEventListener('click', () => { location.href = '/'; });
@@ -1381,14 +1116,3 @@ if (location.pathname === '/watch') {
         if (arrow) arrow.textContent = 'Kein Video ausgewählt – bitte zur Suche zurückkehren.';
     }
 }
-
-canvas.addEventListener('click', () => {
-    if (appState === 'playing' && canvasVideoMode) {
-        if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
-            audioContext.resume().catch(() => {});
-            if (statusPerf) statusPerf.classList.add('hidden');
-            return;
-        }
-        void toggleCustomPause();
-    }
-});
