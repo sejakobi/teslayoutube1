@@ -1,15 +1,18 @@
 // ASCILINE YouTube streamer — Tesla browser frontend (Cleaned WebAudio & WebCodecs Canvas Edition).
-// Features: Tesla setInterval Fix, Pure WebAudio, Absolute Sync, Infinite Scroll
+// Features: Infinite Scroll, Channel Search, Stealth Transport Controls, Audio/Video Sync, Tesla setInterval Fix
 
 'use strict';
 
-const queryInput          = document.getElementById('query-input');
+// ───────── DOM Elements ─────────
+const queryInput          = document.getElementById('search-query') || document.getElementById('query-input');
 const btnPlay             = document.getElementById('btn-play');
-const btnSearch           = document.getElementById('btn-search');
+const btnSearch           = document.getElementById('search-button') || document.getElementById('btn-search');
 const btnCloseSearch      = document.getElementById('btn-close-search');
 const searchPanel         = document.getElementById('search-panel');
 const searchResults       = document.getElementById('search-results');
 const searchMessage       = document.getElementById('search-message');
+const tabVideos           = document.getElementById('tab-videos');
+const tabChannels         = document.getElementById('tab-channels');
 const btnStop             = document.getElementById('btn-stop');
 const presetBtns          = document.querySelectorAll('.preset-btn');
 const displayModeBtns     = document.querySelectorAll('.display-mode-btn');
@@ -29,20 +32,29 @@ const playbackProgress    = document.getElementById('playback-progress');
 const playbackCurrentTime = document.getElementById('playback-current-time');
 const playbackDuration    = document.getElementById('playback-duration');
 
+// Channel Banner & Scroll
+const channelBanner       = document.getElementById('channel-banner');
+const channelAvatar       = document.getElementById('channel-banner-avatar');
+const channelTitle        = document.getElementById('channel-banner-title');
+const channelDesc         = document.getElementById('channel-banner-desc');
+const btnCloseChannel     = document.getElementById('btn-close-channel');
+const scrollSentinel      = document.getElementById('scroll-sentinel');
+const scrollLoader        = document.getElementById('scroll-loader');
+
 const statusTitle = document.getElementById('status-title');
 const statusLive  = document.getElementById('status-live');
 const statusState = document.getElementById('status-state');
 const statusFps   = document.getElementById('status-fps');
 const statusPerf  = document.getElementById('status-perf-hint');
 
-// Canvas/WebCodecs & WebAudio State
-let webCodecsState = null;
-let audioContext = null;
-let audioGainNode = null;
+// ───────── Global State ─────────
+let webCodecsState    = null;
+let audioContext      = null;
+let audioGainNode     = null;
 let customAudioReader = null;
-let activeAudioNodes = [];
-let nextAudioTime = 0;
-let totalDecodedAudioDuration = 0; // Neu: Zählt die exakte Länge des verarbeiteten Audios
+let activeAudioNodes  = [];
+let nextAudioTime     = 0;
+let totalDecodedAudioDuration = 0;
 
 let appState            = 'idle'; // idle | resolving | playing | error
 let ws                  = null;
@@ -54,13 +66,22 @@ let selectedDisplayMode = 'canvas';
 let canvasVideoMode     = false;
 let lastCanvasFrameIndex = -1;
 
-// Wiedergabe-Zeit & Pause-Status für den Fortschrittsbalken
+// Playback Time & Seek State
 let mediaDurationSec  = 0;
 let mediaIsLive       = false;
 let seekBaseSeconds   = 0;
 let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
+
+// Search State
+const STORAGE_KEY       = 'asciline_search_state_v1';
+let searchRequestNo     = 0;
+let currentSearchType   = 'video';
+let activeChannel       = null;
+let nextPageToken       = '';
+let isFetchingMore      = false;
+let totalLoaded         = 0;
 
 const WS_MAX_RETRIES = 5;
 let wsRetryCount     = 0;
@@ -92,7 +113,250 @@ let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
-// ───────── Hilfsfunktionen für Zeit & Fortschrittsbalken ─────────
+// ───────── Search & Infinite Scroll Logic ─────────
+function saveSearchState() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            query: queryInput ? queryInput.value.trim() : '',
+            searchType: currentSearchType,
+            activeChannel: activeChannel,
+        }));
+    } catch (_) {}
+}
+
+function loadSearchState() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+}
+
+function updateFilterUI() {
+    const isChanView = Boolean(activeChannel);
+    if (tabVideos) tabVideos.classList.toggle('active', !isChanView && currentSearchType === 'video');
+    if (tabChannels) tabChannels.classList.toggle('active', !isChanView && currentSearchType === 'channel');
+
+    if (isChanView && channelBanner) {
+        channelBanner.classList.remove('hidden');
+        if (channelTitle) channelTitle.textContent = activeChannel.title || 'YouTube-Kanal';
+        if (channelDesc) channelDesc.textContent = activeChannel.description || 'Alle öffentlichen Uploads dieses Kanals';
+        if (channelAvatar && activeChannel.thumbnail) {
+            channelAvatar.src = activeChannel.thumbnail;
+            channelAvatar.classList.remove('hidden');
+        } else if (channelAvatar) {
+            channelAvatar.classList.add('hidden');
+        }
+        if (document.getElementById('results-title')) document.getElementById('results-title').textContent = `Videos von ${activeChannel.title}`;
+    } else {
+        if (channelBanner) channelBanner.classList.add('hidden');
+        if (document.getElementById('results-title')) document.getElementById('results-title').textContent = currentSearchType === 'channel' ? 'Gefundene Kanäle' : 'Suchergebnisse';
+    }
+}
+
+function createVideoCard(item) {
+    const card = document.createElement('div');
+    card.className = 'result';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'thumb-wrap';
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = item.thumbnail || '';
+    wrap.append(img);
+
+    const mark = document.createElement('span');
+    mark.className = 'playmark';
+    mark.textContent = '▶';
+    wrap.append(mark);
+
+    const openVideo = () => {
+        if (item.selection) {
+            saveSearchState();
+            location.href = '/watch?selection=' + encodeURIComponent(item.selection);
+        }
+    };
+    wrap.addEventListener('click', openVideo);
+
+    const body = document.createElement('div');
+    body.className = 'result-body';
+
+    const t = document.createElement('div');
+    t.className = 'result-title';
+    t.textContent = item.title || 'Unbenanntes Video';
+    t.addEventListener('click', openVideo);
+
+    const chBtn = document.createElement('button');
+    chBtn.type = 'button';
+    chBtn.className = 'result-channel-btn';
+    chBtn.textContent = '📺 ' + (item.channel || 'Unbekannter Kanal');
+    chBtn.title = 'Alle Videos dieses Kanals anzeigen';
+    chBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (item.channel_id) {
+            openChannelView({
+                channel_id: item.channel_id,
+                title: item.channel || 'YouTube-Kanal',
+                description: '',
+                thumbnail: '',
+            });
+        }
+    });
+
+    const meta = document.createElement('div');
+    meta.className = 'result-meta';
+    const m1 = document.createElement('span');
+    m1.textContent = item.published_at ? new Date(item.published_at).toLocaleDateString('de-DE') : 'VIDEO';
+    const m2 = document.createElement('span');
+    m2.textContent = 'CANVAS STREAM ↗';
+    meta.append(m1, m2);
+
+    body.append(t, chBtn, meta);
+    card.append(wrap, body);
+    return card;
+}
+
+function createChannelCard(item) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'channel-card';
+
+    const avatarWrap = document.createElement('div');
+    avatarWrap.className = 'channel-avatar-wrap';
+    if (item.thumbnail) {
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.alt = '';
+        img.src = item.thumbnail;
+        avatarWrap.append(img);
+    }
+
+    const body = document.createElement('div');
+    body.className = 'channel-card-body';
+
+    const name = document.createElement('div');
+    name.className = 'channel-card-title';
+    name.textContent = item.title || item.channel || 'Unbekannter Kanal';
+
+    const desc = document.createElement('div');
+    desc.className = 'channel-card-desc';
+    desc.textContent = item.description || 'Kanal öffnen, um die neuesten Videos zu durchsuchen.';
+
+    const cta = document.createElement('div');
+    cta.className = 'channel-card-cta';
+    cta.textContent = '▶ KANAL-VIDEOS ANZEIGEN';
+
+    body.append(name, desc, cta);
+    card.append(avatarWrap, body);
+
+    card.addEventListener('click', () => {
+        openChannelView({
+            channel_id: item.channel_id,
+            title: item.title || item.channel || 'YouTube-Kanal',
+            description: item.description || '',
+            thumbnail: item.thumbnail || '',
+        });
+    });
+
+    return card;
+}
+
+async function runSearch({ append = false } = {}) {
+    const q = queryInput ? queryInput.value.trim() : '';
+    if (!q && !activeChannel) return;
+    if (append && (!nextPageToken || isFetchingMore)) return;
+
+    const id = append ? searchRequestNo : ++searchRequestNo;
+    isFetchingMore = true;
+
+    if (!append) {
+        if (btnSearch) btnSearch.disabled = true;
+        if (searchResults) searchResults.replaceChildren();
+        nextPageToken = '';
+        totalLoaded = 0;
+        if (searchMessage) {
+            searchMessage.className = 'message loading';
+            searchMessage.textContent = activeChannel ? 'Kanalvideos werden geladen …' : 'Suche läuft …';
+        }
+        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'LOADING';
+        updateFilterUI();
+        saveSearchState();
+    } else {
+        if (scrollLoader) scrollLoader.classList.remove('hidden');
+    }
+
+    try {
+        const params = new URLSearchParams();
+        if (activeChannel) {
+            params.set('search_type', 'video');
+            params.set('channel_id', activeChannel.channel_id);
+            params.set('max_results', '24');
+        } else {
+            params.set('q', q);
+            params.set('search_type', currentSearchType);
+            params.set('max_results', '24');
+        }
+        if (append && nextPageToken) {
+            params.set('page_token', nextPageToken);
+        }
+
+        const r = await fetch('/api/search?' + params.toString(), {
+            headers: { 'Accept': 'application/json' },
+        });
+        const data = await r.json();
+        if (id !== searchRequestNo) return;
+        if (!r.ok) {
+            if (r.status === 403) throw new Error('Bitte zuerst mit deiner PIN anmelden und erneut suchen.');
+            throw new Error(data.error || `Suche fehlgeschlagen (${r.status})`);
+        }
+
+        const items = data.results || [];
+        nextPageToken = data.next_page_token || '';
+        totalLoaded += items.length;
+
+        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = String(totalLoaded).padStart(2, '0') + ' ITEMS';
+        if (searchMessage) searchMessage.className = 'message';
+
+        if (!append && !items.length) {
+            if (searchMessage) searchMessage.textContent = 'Keine passenden Ergebnisse gefunden.';
+            return;
+        }
+
+        if (searchMessage) {
+            searchMessage.textContent = nextPageToken
+                ? `${totalLoaded} Ergebnisse geladen · Scrolle nach unten für mehr`
+                : `${totalLoaded} Ergebnisse geladen · Alle Ergebnisse angezeigt`;
+        }
+
+        if (searchResults) {
+            for (const item of items) {
+                if (item.result_type === 'channel') searchResults.append(createChannelCard(item));
+                else searchResults.append(createVideoCard(item));
+            }
+        }
+    } catch (err) {
+        if (id === searchRequestNo && searchMessage) {
+            searchMessage.className = 'message';
+            searchMessage.textContent = err.message || 'Die Suche ist fehlgeschlagen.';
+            if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'ERROR';
+        }
+    } finally {
+        if (id === searchRequestNo) {
+            if (btnSearch) btnSearch.disabled = false;
+            isFetchingMore = false;
+            if (scrollLoader) scrollLoader.classList.add('hidden');
+        }
+    }
+}
+
+function openChannelView(channelObj) {
+    activeChannel = channelObj;
+    updateFilterUI();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    void runSearch({ append: false });
+}
+
+// ───────── Custom Transport Controls (Play/Pause & Seek) ─────────
 function formatPlaybackTime(seconds) {
     if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
     seconds = Math.floor(seconds);
@@ -182,18 +446,7 @@ if (playbackProgress) {
     });
 }
 
-canvas.addEventListener('click', () => {
-    if (appState === 'playing' && canvasVideoMode) {
-        if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
-            audioContext.resume().catch(() => {});
-            statusPerf.classList.add('hidden');
-            return;
-        }
-        void toggleCustomPause();
-    }
-});
-
-// ───────── Preset & Mode Auswahl ─────────
+// ───────── Preset & Mode Selection ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const p = btn.dataset.preset;
@@ -219,34 +472,40 @@ displayModeBtns.forEach(btn => {
 });
 
 function updateConfigHint() {
-    if (appState === 'playing' || appState === 'resolving') {
+    if (presetHint && (appState === 'playing' || appState === 'resolving')) {
         presetHint.textContent = 'Änderungen werden beim nächsten PLAY übernommen';
         presetHint.classList.remove('hidden');
     }
 }
 
-// ───────── Lautstärke / Stummschaltung (Reines WebAudio) ─────────
+// ───────── Volume / Mute ─────────
 let isMuted = false;
 
-volumeSlider.addEventListener('input', () => {
-    const volume = parseFloat(volumeSlider.value);
-    if (audioGainNode) audioGainNode.gain.value = volume;
-    isMuted = volume === 0;
-    updateMuteBtn();
-});
-
-btnMute.addEventListener('click', () => {
-    isMuted = !isMuted;
-    if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
-    updateMuteBtn();
-});
-
-function updateMuteBtn() {
-    btnMute.textContent = isMuted ? '🔇' : '🔊';
-    btnMute.classList.toggle('muted', isMuted);
+if (volumeSlider) {
+    volumeSlider.addEventListener('input', () => {
+        const volume = parseFloat(volumeSlider.value);
+        if (audioGainNode) audioGainNode.gain.value = volume;
+        isMuted = volume === 0;
+        updateMuteBtn();
+    });
 }
 
-// ───────── Unsichtbares WebAudio-Streaming (Ohne <audio>-Tag) ─────────
+if (btnMute) {
+    btnMute.addEventListener('click', () => {
+        isMuted = !isMuted;
+        if (audioGainNode) audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider ? volumeSlider.value : 1);
+        updateMuteBtn();
+    });
+}
+
+function updateMuteBtn() {
+    if (btnMute) {
+        btnMute.textContent = isMuted ? '🔇' : '🔊';
+        btnMute.classList.toggle('muted', isMuted);
+    }
+}
+
+// ───────── Unvisibles Web-Audio (Ohne HTML-Tags) ─────────
 function stopCustomWebAudio() {
     if (customAudioReader) {
         try { customAudioReader.cancel(); } catch (_) {}
@@ -257,7 +516,7 @@ function stopCustomWebAudio() {
     }
     activeAudioNodes = [];
     nextAudioTime = 0;
-    totalDecodedAudioDuration = 0; // WICHTIG: Audiolänge beim Stoppen zurücksetzen
+    totalDecodedAudioDuration = 0;
     if (audioContext && audioContext.state !== 'closed') {
         audioContext.suspend().catch(() => {});
     }
@@ -273,7 +532,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         audioGainNode = audioContext.createGain();
         audioGainNode.connect(audioContext.destination);
     }
-    audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider.value);
+    audioGainNode.gain.value = isMuted ? 0 : parseFloat(volumeSlider ? volumeSlider.value : 1);
     if (audioContext.state === 'suspended' && !isPlaybackPaused) {
         await audioContext.resume().catch(() => {});
     }
@@ -284,8 +543,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         if (!res.ok || !res.body) return;
         const reader = res.body.getReader();
         customAudioReader = reader;
-        
-        // Einen kleinen Puffer-Vorsprung für Audio geben
         nextAudioTime = audioContext.currentTime + 0.12;
 
         let leftover = new Uint8Array(0);
@@ -321,7 +578,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                 }
                 src.start(nextAudioTime);
                 nextAudioTime += audioBuffer.duration;
-                totalDecodedAudioDuration += audioBuffer.duration; // Die exakte Dauer aufsummieren
+                totalDecodedAudioDuration += audioBuffer.duration;
             }).catch(() => {});
         }
     } catch (e) {
@@ -333,14 +590,14 @@ async function startHiddenWebAudio(sid, startSec = 0) {
 function buildCanvas(cols, rows) {
     gridCols = cols;
     gridRows = rows;
-
     const syncSize = (el) => {
-        el.style.width    = playerContainer.clientWidth  + 'px';
-        el.style.height   = playerContainer.clientHeight + 'px';
+        if (!playerContainer) return;
+        el.style.width     = playerContainer.clientWidth  + 'px';
+        el.style.height    = playerContainer.clientHeight + 'px';
         el.style.objectFit = 'contain';
         el.style.position  = 'absolute';
-        el.style.top  = '0';
-        el.style.left = '0';
+        el.style.top       = '0';
+        el.style.left      = '0';
     };
 
     if (pixelMode) {
@@ -352,7 +609,7 @@ function buildCanvas(cols, rows) {
         const d = dotImageData.data;
         for (let i = 3; i < d.length; i += 4) d[i] = 255;
         syncSize(canvas);
-        asciiPlayer.style.display = 'none';
+        if (asciiPlayer) asciiPlayer.style.display = 'none';
         return;
     }
 
@@ -370,21 +627,22 @@ function buildCanvas(cols, rows) {
 
     syncSize(canvas);
 
-    const cw = playerContainer.clientWidth;
-    const ch = playerContainer.clientHeight;
-    const fs = Math.min(cw / canvas.width, ch / canvas.height);
-    const ox = (cw - canvas.width  * fs) / 2;
-    const oy = (ch - canvas.height * fs) / 2;
-
-    asciiPlayer.style.width  = canvas.width  + 'px';
-    asciiPlayer.style.height = canvas.height + 'px';
-    asciiPlayer.style.position = 'absolute';
-    asciiPlayer.style.top  = '0';
-    asciiPlayer.style.left = '0';
-    asciiPlayer.style.transformOrigin = 'top left';
-    asciiPlayer.style.transform  = `translate(${ox}px,${oy}px) scale(${fs})`;
-    asciiPlayer.style.fontSize   = '8px';
-    asciiPlayer.style.lineHeight = '8px';
+    if (asciiPlayer && playerContainer) {
+        const cw = playerContainer.clientWidth;
+        const ch = playerContainer.clientHeight;
+        const fs = Math.min(cw / canvas.width, ch / canvas.height);
+        const ox = (cw - canvas.width  * fs) / 2;
+        const oy = (ch - canvas.height * fs) / 2;
+        asciiPlayer.style.width  = canvas.width  + 'px';
+        asciiPlayer.style.height = canvas.height + 'px';
+        asciiPlayer.style.position = 'absolute';
+        asciiPlayer.style.top  = '0';
+        asciiPlayer.style.left = '0';
+        asciiPlayer.style.transformOrigin = 'top left';
+        asciiPlayer.style.transform  = `translate(${ox}px,${oy}px) scale(${fs})`;
+        asciiPlayer.style.fontSize   = '8px';
+        asciiPlayer.style.lineHeight = '8px';
+    }
 
     ctx.font         = 'bold 8px Courier New';
     ctx.textBaseline = 'top';
@@ -405,13 +663,15 @@ function buildVideoCanvas(width, height) {
     canvas.style.imageRendering = 'auto';
     canvas.style.position = 'absolute';
     canvas.style.objectFit = 'contain';
-    asciiPlayer.style.display = 'none';
-    asciiPlayer.textContent = '';
+    if (asciiPlayer) {
+        asciiPlayer.style.display = 'none';
+        asciiPlayer.textContent = '';
+    }
     layoutVideoCanvas();
 }
 
 function layoutVideoCanvas() {
-    if (!canvasVideoMode || !canvas.width || !canvas.height) return;
+    if (!canvasVideoMode || !canvas.width || !canvas.height || !playerContainer) return;
     const cw = playerContainer.clientWidth;
     const ch = playerContainer.clientHeight;
     const scale = Math.min(cw / canvas.width, ch / canvas.height);
@@ -432,105 +692,12 @@ function clearFrameBuffer() {
     frameBuffer.length = 0;
 }
 
-// ───────── ASCII Render Loop ─────────
-function renderFrame(now) {
-    if (appState !== 'playing' || !readyToRender) return;
-    requestAnimationFrame(renderFrame);
-
-    if (frameBuffer.length === 0) return;
-
-    if (!clockAnchored) {
-        streamStartTime = now - frameBuffer[0].time * 1000 - PRESENT_LEAD_MS;
-        clockAnchored   = true;
-    }
-    const masterClock = (now - streamStartTime) / 1000.0;
-
-    while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
-        const stale = frameBuffer.shift();
-        if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
-    }
-    if (frameBuffer[0].time > masterClock + 0.05) return;
-
-    const frameObj = frameBuffer.shift();
-    const frame    = frameObj.data;
-
-    frameCount++;
-    if (lastPaintTime > 0) {
-        const gap = now - lastPaintTime;
-        if (gap > maxPaintInterval) maxPaintInterval = gap;
-    }
-    lastPaintTime = now;
-
-    if (now - lastFpsUpdate >= 1000) {
-        measuredFps      = frameCount;
-        frameCount       = 0;
-        lastFpsUpdate    = now;
-        const jitter     = Math.round(maxPaintInterval);
-        maxPaintInterval = 0;
-        statusFps.textContent = `FPS ${measuredFps}/${Math.round(targetFps)}  JIT ${jitter}ms  BUF ${frameBuffer.length}`;
-    }
-
-    if (canvasVideoMode) {
-        if (frame && typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
-            lastCanvasFrameIndex = Math.max(lastCanvasFrameIndex, frameObj.index ?? -1);
-            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-            frame.close();
-        }
-        return;
-    }
-
-    if (renderMode === 1) {
-        asciiPlayer.style.display = 'block';
-        asciiPlayer.style.color   = '#fff';
-        asciiPlayer.textContent   = frame;
-        return;
-    }
-    if (pixelMode) {
-        const view = frame;
-        const data = dotImageData.data;
-        for (let src = 0, dst = 0; src < view.length; src += 3, dst += 4) {
-            data[dst]     = view[src + 2];
-            data[dst + 1] = view[src + 1];
-            data[dst + 2] = view[src];
-        }
-        ctx.putImageData(dotImageData, 0, 0);
-        return;
-    }
-
-    const view   = frame;
-    const buf    = selectionBuffer;
-    const stride = gridCols + 1;
-    ctx.fillStyle = '#050505';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.font         = 'bold 8px Courier New';
-    ctx.textBaseline = 'top';
-    let col = 0, row = 0, prevPacked = -1;
-    for (let idx = 0; idx < view.length; idx += 4) {
-        const ch = view[idx];
-        const r  = view[idx + 1];
-        const g  = view[idx + 2];
-        const b  = view[idx + 3];
-        const packed = (r << 16) | (g << 8) | b;
-        if (packed !== prevPacked) {
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
-            prevPacked = packed;
-        }
-        ctx.fillText(CHAR_LUT[ch], xPos[col], yPos[row]);
-        buf[row * stride + col] = ch;
-        col++;
-        if (col >= gridCols) { col = 0; row++; }
-    }
-    asciiPlayer.style.display = 'block';
-    asciiPlayer.style.color   = 'transparent';
-}
-
-// ───────── WebCodecs Video Decoder → Visible Canvas ─────────
+// ───────── WebCodecs Video Decoder → Visible Canvas (FIXED) ─────────
 function stopNativeCanvasSource() {
     const state = webCodecsState;
     webCodecsState = null;
     if (state) {
         state.stopped = true;
-        // WICHTIG: clearInterval nutzen, da wir auf setInterval gewechselt haben!
         if (state.raf) clearInterval(state.raf);
         if (state.reader) state.reader.cancel().catch(() => {});
         if (state.decoder) {
@@ -557,7 +724,9 @@ function getMp4VideoDescription(mp4File, track) {
     if (!box || !window.MP4Box || !MP4Box.DataStream) return undefined;
     const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
     box.write(stream);
-    return new Uint8Array(stream.buffer, 8);
+    // CRITICAL FIX: Only extract exactly the bytes written by the box.
+    // Over-allocated arrays lead to WebCodecs DataError.
+    return new Uint8Array(stream.buffer).slice(8, stream.position);
 }
 
 function pumpSampleQueue(state) {
@@ -598,9 +767,8 @@ function pumpSampleQueue(state) {
 function startWebCodecsDrawLoop(state) {
     if (state.raf || state.stopped) return;
     
-    // Wir nutzen setInterval (ca. 30 FPS), da requestAnimationFrame im Tesla-Hintergrund gedrosselt wird
+    // Tesla Fix: setInterval statt requestAnimationFrame
     const intervalMs = 1000 / 30;
-    
     state.raf = setInterval(() => {
         const now = performance.now();
         if (state.stopped || webCodecsState !== state || appState !== 'playing') {
@@ -693,9 +861,24 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
 
     stopNativeCanvasSource();
     const state = {
-        stopped: false, file: null, decoder: null, reader: null, raf: 0,
-        frames: [], sampleQueue: [], gotFirstKeyframe: false, playbackStart: null, drawn: 0, fpsStart: 0, lastPresentedTime: 0, started: false,
-        track: null, timescale: 1, timestampBase: null, sampleCount: 0, decoderConfigured: false,
+        stopped: false,
+        file: null,
+        decoder: null,
+        reader: null,
+        raf: 0,
+        frames: [],
+        sampleQueue: [],
+        gotFirstKeyframe: false,
+        playbackStart: null,
+        drawn: 0,
+        fpsStart: 0,
+        lastPresentedTime: 0,
+        started: false,
+        track: null,
+        timescale: 1,
+        timestampBase: null,
+        sampleCount: 0,
+        decoderConfigured: false,
     };
     webCodecsState = state;
     setStatus('BUFFERING · WEBCODECS', 'resolving');
@@ -727,8 +910,10 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                 mediaDurationSec = info.duration / info.timescale;
             }
             const description = getMp4VideoDescription(mp4File, track);
+            
+            // FIX: Nichts hartcodieren, sondern den echten Codec vom Track nehmen!
             const config = {
-                codec: track.codec.startsWith('avc1') ? track.codec : 'avc1.64001f',
+                codec: track.codec,
                 codedWidth: (track.video && track.video.width) || track.track_width || fallbackWidth || 640,
                 codedHeight: (track.video && track.video.height) || track.track_height || fallbackHeight || 360,
             };
@@ -791,6 +976,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         state.reader = response.body.getReader();
         let fileStart = 0;
         while (!state.stopped) {
+            // Flow-Control
             while (!state.stopped && (state.sampleQueue.length > 60 || state.frames.length > 20)) {
                 pumpSampleQueue(state);
                 await new Promise(r => setTimeout(r, 40));
@@ -815,7 +1001,102 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     }
 }
 
-// ───────── WebSocket (ASCII Mode) ─────────
+// ───────── ASCII Fallback Rendering ─────────
+function renderFrame(now) {
+    if (appState !== 'playing' || !readyToRender) return;
+    requestAnimationFrame(renderFrame);
+
+    if (frameBuffer.length === 0) return;
+
+    if (!clockAnchored) {
+        streamStartTime = now - frameBuffer[0].time * 1000 - PRESENT_LEAD_MS;
+        clockAnchored   = true;
+    }
+    const masterClock = (now - streamStartTime) / 1000.0;
+
+    while (frameBuffer.length > 1 && frameBuffer[0].time < masterClock - 0.1) {
+        const stale = frameBuffer.shift();
+        if (stale && stale.data && typeof ImageBitmap !== 'undefined' && stale.data instanceof ImageBitmap) stale.data.close();
+    }
+    if (frameBuffer[0].time > masterClock + 0.05) return;
+
+    const frameObj = frameBuffer.shift();
+    const frame    = frameObj.data;
+
+    frameCount++;
+    if (lastPaintTime > 0) {
+        const gap = now - lastPaintTime;
+        if (gap > maxPaintInterval) maxPaintInterval = gap;
+    }
+    lastPaintTime = now;
+
+    if (now - lastFpsUpdate >= 1000) {
+        measuredFps      = frameCount;
+        frameCount       = 0;
+        lastFpsUpdate    = now;
+        const jitter     = Math.round(maxPaintInterval);
+        maxPaintInterval = 0;
+        if (statusFps) statusFps.textContent = `FPS ${measuredFps}/${Math.round(targetFps)}  JIT ${jitter}ms  BUF ${frameBuffer.length}`;
+    }
+
+    if (canvasVideoMode) {
+        if (frame && typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
+            lastCanvasFrameIndex = Math.max(lastCanvasFrameIndex, frameObj.index ?? -1);
+            ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+            frame.close();
+        }
+        return;
+    }
+
+    if (renderMode === 1) {
+        if (asciiPlayer) {
+            asciiPlayer.style.display = 'block';
+            asciiPlayer.style.color   = '#fff';
+            asciiPlayer.textContent   = frame;
+        }
+        return;
+    }
+    if (pixelMode) {
+        const view = frame;
+        const data = dotImageData.data;
+        for (let src = 0, dst = 0; src < view.length; src += 3, dst += 4) {
+            data[dst]     = view[src + 2];
+            data[dst + 1] = view[src + 1];
+            data[dst + 2] = view[src];
+        }
+        ctx.putImageData(dotImageData, 0, 0);
+        return;
+    }
+
+    const view   = frame;
+    const buf    = selectionBuffer;
+    const stride = gridCols + 1;
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.font         = 'bold 8px Courier New';
+    ctx.textBaseline = 'top';
+    let col = 0, row = 0, prevPacked = -1;
+    for (let idx = 0; idx < view.length; idx += 4) {
+        const ch = view[idx];
+        const r  = view[idx + 1];
+        const g  = view[idx + 2];
+        const b  = view[idx + 3];
+        const packed = (r << 16) | (g << 8) | b;
+        if (packed !== prevPacked) {
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            prevPacked = packed;
+        }
+        ctx.fillText(CHAR_LUT[ch], xPos[col], yPos[row]);
+        buf[row * stride + col] = ch;
+        col++;
+        if (col >= gridCols) { col = 0; row++; }
+    }
+    if (asciiPlayer) {
+        asciiPlayer.style.display = 'block';
+        asciiPlayer.style.color   = 'transparent';
+    }
+}
+
 function connectWs(sid) {
     clearFrameBuffer();
     canvasVideoMode = false;
@@ -904,180 +1185,6 @@ function connectWs(sid) {
     ws.onerror = () => {};
 }
 
-// ───────── Control API ─────────
-async function doPlay(resumeAtSec = 0) {
-    const params = new URLSearchParams(location.search);
-    const selection = params.get('selection');
-    const query = queryInput ? queryInput.value.trim() : '';
-    if (!selection && !query) { if (queryInput) queryInput.focus(); return; }
-
-    if (presetHint) presetHint.classList.add('hidden');
-    stopCustomWebAudio();
-    stopPoll();
-    closeWs();
-    clearCanvas();
-
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
-
-    appState      = 'resolving';
-    currentPreset = selectedPreset;
-    setUiState('resolving');
-    setStatus('RESOLVING…', 'resolving');
-    if (statusTitle) statusTitle.textContent = selection ? 'ASCILINE' : query;
-    if (statusLive) statusLive.classList.add('hidden');
-    if (statusFps) statusFps.textContent = '';
-    if (statusPerf) statusPerf.classList.add('hidden');
-
-    let resp, data;
-    try {
-        resp = await fetch('/api/play', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify(selection
-                ? { selection, preset: currentPreset, display_mode: selectedDisplayMode }
-                : { query, preset: currentPreset, display_mode: selectedDisplayMode }),
-        });
-        data = await resp.json();
-    } catch (err) {
-        setError('Network error — ' + err.message);
-        setUiState('idle');
-        return;
-    }
-    if (!resp.ok) {
-        setError(data.error || `Server error ${resp.status}`);
-        setUiState('idle');
-        return;
-    }
-
-    sessionId        = data.session_id;
-    appState         = 'playing';
-    mediaDurationSec = Number(data.duration) || 0;
-    mediaIsLive      = Boolean(data.is_live);
-    setUiState('playing');
-    updateTitle(data.title, data.is_live);
-
-    if (idleOverlay) idleOverlay.classList.add('hidden');
-    if (selectedDisplayMode === 'canvas' || selection) {
-        startNativeCanvasMedia(
-            sessionId,
-            data.canvas_width,
-            data.canvas_height,
-            mediaDurationSec,
-            mediaIsLive,
-            Number(resumeAtSec) || 0
-        );
-    } else {
-        connectWs(sessionId); 
-    }
-    startPoll();
-}
-
-async function doStop() {
-    stopCustomWebAudio();
-    stopPoll();
-    wsRetryCount = 0;
-    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
-    try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
-    closeWs();
-    finishPlayback();
-    setStatus('IDLE', 'idle');
-    if (statusTitle) statusTitle.textContent = '';
-    if (statusLive) statusLive.classList.add('hidden');
-    if (presetHint) presetHint.classList.add('hidden');
-}
-
-function startPoll() {
-    stopPoll();
-    pollTimer = setInterval(async () => {
-        if (appState !== 'playing') { stopPoll(); return; }
-        let data;
-        try {
-            const r = await fetch('/api/status');
-            data = await r.json();
-        } catch (_) { return; }
-        if (data.title) updateTitle(data.title, data.is_live);
-        if (data.duration && !mediaDurationSec) {
-            mediaDurationSec = Number(data.duration) || 0;
-        }
-        if (data.state === 'error') {
-            setError(data.error || 'Stream error');
-            closeWs();
-            finishPlayback();
-            stopPoll();
-        }
-    }, 2000);
-}
-
-function stopPoll() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-}
-
-function setUiState(state) {
-    if (btnPlay) btnPlay.disabled = false;
-    if (btnStop) btnStop.disabled = !(state === 'resolving' || state === 'playing');
-}
-
-function setStatus(label, stateClass) {
-    if (statusState) {
-        statusState.textContent = label;
-        statusState.className   = 'status-segment status-state';
-        if (stateClass) statusState.classList.add('state-' + stateClass);
-    }
-}
-
-function setError(msg) {
-    appState = 'error';
-    if (statusTitle) statusTitle.textContent = '⚠ ' + msg;
-    setStatus('ERROR', 'error');
-    if (statusLive) statusLive.classList.add('hidden');
-    if (statusFps) statusFps.textContent = '';
-    if (statusPerf) statusPerf.classList.add('hidden');
-    setUiState('idle');
-    if (idleOverlay) idleOverlay.classList.remove('hidden');
-}
-
-function updateTitle(title, isLive) {
-    if (statusTitle && title) statusTitle.textContent = title;
-    if (statusLive) statusLive.classList.toggle('hidden', !isLive);
-}
-
-function finishPlayback() {
-    stopCustomWebAudio();
-    appState          = 'idle';
-    readyToRender     = false;
-    isPlaybackPaused  = false;
-    seekBaseSeconds   = 0;
-    clearFrameBuffer();
-    stopNativeCanvasSource();
-    clearCanvas();
-    if (idleOverlay) idleOverlay.classList.remove('hidden');
-    if (playbackControls) playbackControls.classList.add('hidden');
-    setUiState('idle');
-    if (statusFps) statusFps.textContent = '';
-    if (statusPerf) statusPerf.classList.add('hidden');
-    fpsBelowThreshold = false;
-}
-
-function clearCanvas() {
-    stopNativeCanvasSource();
-    canvasVideoMode = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.style.display      = 'none';
-    if (asciiPlayer) {
-        asciiPlayer.textContent   = '';
-        asciiPlayer.style.display = 'none';
-    }
-}
-
-function closeWs() {
-    if (!ws) return;
-    ws.onclose = null;
-    ws.onerror = null;
-    try { ws.close(); } catch (_) {}
-    ws = null;
-}
-
 const flushSelectionLayer = () => {
     if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
     if (asciiPlayer) asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
@@ -1093,6 +1200,17 @@ window.addEventListener('resize', () => {
     else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
 });
 
+canvas.addEventListener('click', () => {
+    if (appState === 'playing' && canvasVideoMode) {
+        if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
+            audioContext.resume().catch(() => {});
+            if (statusPerf) statusPerf.classList.add('hidden');
+            return;
+        }
+        void toggleCustomPause();
+    }
+});
+
 // Split-page mode: /watch startet automatisch das ausgewählte Video
 if (location.pathname === '/watch') {
     document.body.classList.add('watch-page');
@@ -1100,7 +1218,6 @@ if (location.pathname === '/watch') {
     const selection = params.get('selection');
     if (btnPlay) btnPlay.classList.add('hidden');
     
-    // Verstecke die Such-Elemente, falls sie auf watch.html noch existieren
     const qs = document.getElementById('btn-search');
     if (qs) qs.classList.add('hidden');
     if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
