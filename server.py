@@ -80,15 +80,7 @@ def _resolve_selection(token: str) -> str | None:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Enforce the PIN cookie on every route.
-
-    - WebSocket upgrades: 403 here so the handshake fails cleanly; the
-      ws_video handler also re-checks and closes with code 4003.
-    - /api/* without cookie: 403 JSON.
-    - /audio without cookie: 403 plain (it's a streaming endpoint, not a page).
-    - Everything else without cookie: serve pin.html.
-    - /api/auth itself is exempt so the PIN can be submitted.
-    """
+    """Enforce the PIN cookie on every route."""
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -125,7 +117,6 @@ def check_ffmpeg() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # atexit + signal handlers so no orphan ffmpeg survives a crash.
     atexit.register(_atexit_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
@@ -143,47 +134,116 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/api/search")
-async def api_search(q: str = ""):
-    """Search YouTube videos via the server-side YouTube Data API v3."""
-    query = q.strip()
-    if not query:
-        return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
-    if len(query) > 200:
-        return JSONResponse(status_code=400, content={"error": "Der Suchbegriff ist zu lang."})
+async def api_search(q: str = "", search_type: str = "video", channel_id: str = "", uploads_playlist_id: str = "", page_token: str = ""):
+    """YouTube Data API v3 Wrapper für Videos, Kanäle und Kanal-Uploads."""
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "YOUTUBE_API_KEY ist auf dem Server nicht konfiguriert."})
-    params = urlencode({"part":"snippet", "type":"video", "maxResults":10, "q":query, "regionCode":"DE", "relevanceLanguage":"de", "key":api_key})
-    url = "https://www.googleapis.com/youtube/v3/search?" + params
+
+    params = {"key": api_key, "maxResults": "25"}
+    if page_token:
+        params["pageToken"] = page_token
+
+    if channel_id and uploads_playlist_id:
+        url = "https://www.googleapis.com/youtube/v3/playlistItems?" + urlencode({**params, "part": "snippet,contentDetails", "playlistId": uploads_playlist_id})
+    elif channel_id:
+        chan_url = "https://www.googleapis.com/youtube/v3/channels?" + urlencode({"key": api_key, "part": "contentDetails,snippet", "id": channel_id})
+        try:
+            chan_data = await asyncio.to_thread(lambda: json.loads(urlopen(UrlRequest(chan_url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=10).read().decode("utf-8")))
+            items = chan_data.get("items", [])
+            if not items:
+                return {"results": []}
+            uploads_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+            return await api_search(channel_id=channel_id, uploads_playlist_id=uploads_id)
+        except Exception:
+            return JSONResponse(status_code=502, content={"error": "Kanal konnte nicht geladen werden."})
+    else:
+        query = q.strip()
+        if not query:
+            return JSONResponse(status_code=400, content={"error": "Bitte einen Suchbegriff eingeben."})
+        stype = "channel" if search_type == "channel" else "video"
+        url = "https://www.googleapis.com/youtube/v3/search?" + urlencode({**params, "part": "snippet", "type": stype, "q": query, "regionCode": "DE", "relevanceLanguage": "de"})
+
     def fetch_results():
-        request = UrlRequest(url, headers={"User-Agent":"ASCILINE/1.0"})
-        with urlopen(request, timeout=12) as response:
+        with urlopen(UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=12) as response:
             return json.loads(response.read().decode("utf-8"))
+
     try:
         data = await asyncio.to_thread(fetch_results)
         results = []
         for item in data.get("items", []):
-            video_id = item.get("id", {}).get("videoId")
             snippet = item.get("snippet", {})
-            if not video_id:
-                continue
             thumbs = snippet.get("thumbnails", {})
             thumb = thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}
-            results.append({"selection":_new_selection(video_id), "title":snippet.get("title", "Unbekanntes Video"), "channel":snippet.get("channelTitle", ""), "thumbnail":thumb.get("url", ""), "published_at":snippet.get("publishedAt", "")})
-        return {"results":results}
-    except HTTPError as exc:
-        try:
-            details = json.loads(exc.read().decode("utf-8"))
-            api_message = details.get("error", {}).get("message", "")
-        except Exception:
-            api_message = ""
-        log.warning("YouTube API HTTP %s: %s", exc.code, api_message)
-        if exc.code == 403:
-            return JSONResponse(status_code=502, content={"error":"YouTube hat die Suche abgelehnt. Prüfe API-Schlüssel, aktivierte YouTube Data API v3 und Tageskontingent."})
-        return JSONResponse(status_code=502, content={"error":"Fehler bei der YouTube-Suche."})
-    except (URLError, TimeoutError, OSError, ValueError) as exc:
+            
+            if channel_id and uploads_playlist_id:
+                vid = item.get("contentDetails", {}).get("videoId") or snippet.get("resourceId", {}).get("videoId")
+                if not vid: continue
+                results.append({
+                    "selection": _new_selection(vid),
+                    "title": snippet.get("title", "Video"),
+                    "channel": snippet.get("channelTitle", ""),
+                    "thumbnail": thumb.get("url", ""),
+                    "published_at": snippet.get("publishedAt", ""),
+                    "result_type": "video"
+                })
+            else:
+                id_info = item.get("id", {})
+                res_type = id_info.get("kind", "").split("#")[-1]
+                if res_type == "channel":
+                    cid = id_info.get("channelId")
+                    if not cid: continue
+                    results.append({
+                        "channel_id": cid,
+                        "title": snippet.get("title", "Kanal"),
+                        "description": snippet.get("description", ""),
+                        "thumbnail": thumb.get("url", ""),
+                        "result_type": "channel"
+                    })
+                else:
+                    vid = id_info.get("videoId")
+                    if not vid: continue
+                    results.append({
+                        "selection": _new_selection(vid),
+                        "title": snippet.get("title", "Video"),
+                        "channel": snippet.get("channelTitle", ""),
+                        "thumbnail": thumb.get("url", ""),
+                        "published_at": snippet.get("publishedAt", ""),
+                        "result_type": "video"
+                    })
+
+        return {
+            "results": results,
+            "next_page_token": data.get("nextPageToken", ""),
+            "total_results": data.get("pageInfo", {}).get("totalResults", 0),
+            "uploads_playlist_id": uploads_playlist_id
+        }
+    except Exception as exc:
         log.warning("YouTube search request failed: %s", exc)
-        return JSONResponse(status_code=502, content={"error":"YouTube ist momentan nicht erreichbar."})
+        return JSONResponse(status_code=502, content={"error": "YouTube ist momentan nicht erreichbar."})
+
+
+@app.get("/api/video-info")
+async def api_video_info(video_id: str):
+    """Liefert Kanal-Metadaten zu einem Video für den Creator-Banner."""
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key or not video_id:
+        return {}
+    url = "https://www.googleapis.com/youtube/v3/videos?" + urlencode({"key": api_key, "part": "snippet", "id": video_id})
+    try:
+        def fetch():
+            with urlopen(UrlRequest(url, headers={"User-Agent": "ASCILINE/1.0"}), timeout=8) as r:
+                return json.loads(r.read().decode("utf-8"))
+        data = await asyncio.to_thread(fetch)
+        items = data.get("items", [])
+        if not items: return {}
+        snip = items[0].get("snippet", {})
+        return {
+            "channel_id": snip.get("channelId", ""),
+            "title": snip.get("channelTitle", "")
+        }
+    except Exception:
+        return {}
 
 
 @app.get("/")
@@ -207,7 +267,7 @@ async def audio_stream(request: Request):
     if audio_pipeline is None:
         return Response(status_code=503, content="audio pipeline not ready")
 
-    # Als application/octet-stream getarnt, um Browser-Media-Sperren zu umgehen
+    # Als neutraler Binärstrom getarnt, um Browser-Media-Sperren zu umgehen
     return StreamingResponse(
         audio_pipeline.chunks(),
         media_type="application/octet-stream",
@@ -219,12 +279,6 @@ async def audio_stream(request: Request):
 
 
 def _native_mp4_command(session: Session) -> list[str]:
-    """Create a video-only fragmented MP4 stream for Canvas/WebCodecs.
-
-    Video is stream-copied without re-encoding. Audio is delivered by the
-    separate AudioPipeline endpoint, so including an audio track here only
-    adds muxing work and can produce unnecessary MP4 codec warnings.
-    """
     media = session.media
     if media is None:
         raise ValueError("media is not ready")
@@ -244,7 +298,6 @@ def _native_mp4_command(session: Session) -> list[str]:
 
 
 async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:
-    """Drain stderr so FFmpeg cannot block; never log signed stream URLs."""
     if proc.stderr is None:
         return
     try:
@@ -266,7 +319,6 @@ async def _native_mp4_body(
     session: Session,
     stderr_task: asyncio.Task,
 ):
-    """Stream fragmented MP4 chunks and tear FFmpeg down on disconnect/stop."""
     try:
         if proc.stdout is None:
             return
@@ -304,7 +356,6 @@ async def _native_mp4_body(
 
 @app.get("/media")
 async def native_canvas_media(request: Request):
-    """Browser-native stream endpoint used only by Canvas mode."""
     session_id = request.query_params.get("session")
     if not session_id:
         return Response(status_code=400, content="missing session id")
@@ -326,12 +377,7 @@ async def native_canvas_media(request: Request):
         return Response(status_code=502, content="could not start native video stream")
 
     stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
-    log.info(
-        "native Canvas stream opened session=%s format=%s separate_audio_url=%s",
-        session_id, session.media.format_note, bool(session.media.audio_url),
-    )
     
-    # media_type ebenfalls auf application/octet-stream gesetzt
     return StreamingResponse(
         _native_mp4_body(proc, session, stderr_task),
         media_type="application/octet-stream",
@@ -370,15 +416,11 @@ async def api_auth(req: AuthRequest, request: Request):
     auth.record_success(ip)
     cookie_value = auth.make_cookie_value()
     response = JSONResponse(content={"ok": True})
-    # Mark Secure only when this request itself came in over https; over
-    # plain http the browser would refuse to send a Secure cookie back on
-    # the /audio GET.
     is_https = (
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto", "").lower() == "https"
     )
     response.headers["Set-Cookie"] = auth.cookie_header(cookie_value, secure=is_https)
-    log.info("Successful auth from %s", ip)
     return response
 
 
@@ -392,18 +434,15 @@ class PlayRequest(BaseModel):
 @app.post("/api/play")
 async def api_play(req: PlayRequest):
     preset_name = req.preset if req.preset in PRESETS else DEFAULT_PRESET
-    display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "ascii"
+    display_mode = req.display_mode if req.display_mode in {"ascii", "canvas"} else "canvas"
     query = _resolve_selection(req.selection or "") if req.selection else (req.query or "").strip()
     if not query:
-        return JSONResponse(status_code=400, content={"error": "Die Auswahl ist ungültig oder abgelaufen. Bitte suche das Video erneut."})
+        return JSONResponse(status_code=400, content={"error": "Die Auswahl ist ungültig oder abgelaufen."})
     mgr = get_manager()
     try:
         session = await mgr.play(query, preset_name, display_mode)
     except ResolverError as exc:
-        return JSONResponse(
-            status_code=422,
-            content={"error": str(exc)},
-        )
+        return JSONResponse(status_code=422, content={"error": str(exc)})
 
     if session.state == State.PLAYING and session.media is not None:
         preset_cfg = PRESETS[session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET]
@@ -411,6 +450,8 @@ async def api_play(req: PlayRequest):
             "session_id": session.session_id,
             "title": session.media.title,
             "is_live": session.media.is_live,
+            "duration": session.media.duration or 0,
+            "video_id": session.media.video_id,
             "cols": preset_cfg["cols"],
             "rows": preset_cfg["rows"],
             "fps": preset_cfg["fps_cap"],
@@ -420,11 +461,7 @@ async def api_play(req: PlayRequest):
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
         }
 
-    # Superseded during resolve (rare race — another Play beat us).
-    return JSONResponse(
-        status_code=409,
-        content={"error": "session superseded by a newer play request"},
-    )
+    return JSONResponse(status_code=409, content={"error": "superseded"})
 
 
 @app.post("/api/stop")
@@ -439,7 +476,6 @@ async def api_status():
 
 
 async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
-    """Stream ASCII-protocol or JPEG Canvas frames for an already-playing session."""
     preset_name = session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET
     preset_cfg = PRESETS[preset_name]
     preset = PresetSpec(
@@ -459,9 +495,6 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
 
     try:
         await websocket.send_text(pipeline.init_message())
-
-        first_frame_logged = False
-        deflate_negotiated = _ws_offered_deflate(websocket)
         async for payload in pipeline.frames():
             if websocket.client_state != WebSocketState.CONNECTED:
                 break
@@ -469,19 +502,8 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
                 break
             await websocket.send_bytes(payload)
             pipeline.frames_sent += 1
-            if not first_frame_logged:
-                import zlib
-                approx = len(zlib.compress(payload, 6))
-                log.info(
-                    "first frame: raw=%d bytes deflate≈%d bytes "
-                    "(ratio=%.2f) preset=%s permessage-deflate=%s",
-                    len(payload), approx, approx / max(1, len(payload)),
-                    preset_name, deflate_negotiated,
-                )
-                first_frame_logged = True
-
     except (WebSocketDisconnect, ConnectionError):
-        log.info("ws client disconnected")
+        pass
     except Exception:
         log.exception("video ws error")
     finally:
@@ -492,18 +514,6 @@ async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
                 pass
 
 
-def _ws_offered_deflate(websocket: WebSocket) -> bool:
-    headers = dict(websocket.scope.get("headers") or [])
-    raw = headers.get(b"sec-websocket-extensions", b"")
-    return b"permessage-deflate" in raw.lower()
-
-
-async def _reject_ws(websocket: WebSocket, reason: str) -> None:
-    await websocket.accept()
-    await websocket.send_text(f"Error: {reason}")
-    await websocket.close()
-
-
 @app.websocket("/ws/video")
 async def ws_video(websocket: WebSocket):
     if not auth.is_authenticated(websocket.scope):
@@ -512,11 +522,11 @@ async def ws_video(websocket: WebSocket):
 
     session_id = websocket.query_params.get("session")
     if not session_id:
-        await _reject_ws(websocket, "missing session id — call /api/play first")
+        await websocket.close(code=4003)
         return
     session = get_manager().get(session_id)
     if session is None:
-        await _reject_ws(websocket, f"unknown or stale session id: {session_id!r}")
+        await websocket.close(code=4003)
         return
     await _run_video_ws(websocket, session)
 
@@ -531,24 +541,20 @@ def main() -> None:
     parser.add_argument(
         "--pin",
         default=os.environ.get("ASCIILINE_PIN"),
-        help="4–8 digit PIN (or set ASCIILINE_PIN env var)",
+        help="4–8 digit PIN",
     )
     args = parser.parse_args()
 
     check_ffmpeg()
 
     if not args.pin:
-        print(
-            "ERROR: PIN required. Pass --pin <4-8 digits> or set ASCIILINE_PIN.",
-            file=sys.stderr,
-        )
+        print("ERROR: PIN required.", file=sys.stderr)
         sys.exit(1)
 
     auth.init()
     auth.set_pin(args.pin)
     init_manager(max_source_height=args.max_source_height)
 
-    print(f"ASCILINE starting on http://{args.bind}:{args.port}")
     uvicorn.run(
         app,
         host=args.bind,
