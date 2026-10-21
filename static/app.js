@@ -1,4 +1,4 @@
-// ASCILINE YouTube streamer — Tesla browser frontend.
+// ASCILINE YouTube streamer — Tesla browser fronten.
 // Pure WebCodecs Canvas + Pure WebAudio (No HTMLVideoElement / No HTMLAudioElement).
 
 'use strict';
