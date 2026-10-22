@@ -1,6 +1,6 @@
 // CYBER.play / ASCILINE YouTube streamer — Tesla browser frontend.
-// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Loading Progress %,
-//           Immersive Fullscreen, Auto-Recovery, MP3 Frame-Sync & Gapless WebAudio
+// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Scrubbable Progress Bar,
+//           Loading Progress %, Immersive Fullscreen, Auto-Recovery, MP3 Frame-Sync & Gapless WebAudio
 
 'use strict';
 
@@ -81,6 +81,7 @@ let seekBaseSeconds   = 0;
 let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
+let lastSeekCommitAt  = 0;
 
 // Auto-Hide Fullscreen UI Timer (blendet nach 3.2s Inaktivität alles Störende aus)
 const UI_IDLE_HIDE_MS = 3200;
@@ -136,6 +137,42 @@ let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
+// ───────── Dauer-Parser (unterstützt Zahlen, Sekunden-Strings und HH:MM:SS) ─────────
+function parseDurationSeconds(raw) {
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        if (!trimmed) return 0;
+        const directNum = Number(trimmed);
+        if (Number.isFinite(directNum) && directNum > 0) return directNum;
+        if (trimmed.includes(':')) {
+            const parts = trimmed.split(':').map(Number);
+            if (parts.every(n => Number.isFinite(n) && n >= 0)) {
+                if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+                if (parts.length === 2) return parts[0] * 60 + parts[1];
+            }
+        }
+    }
+    return 0;
+}
+
+function extractDurationFromPayload(data) {
+    if (!data || typeof data !== 'object') return 0;
+    const candidates = [
+        data.duration,
+        data.duration_seconds,
+        data.duration_sec,
+        data.length_seconds,
+        data.length,
+        data.total_duration,
+    ];
+    for (const c of candidates) {
+        const parsed = parseDurationSeconds(c);
+        if (parsed > 0) return parsed;
+    }
+    return 0;
+}
+
 // ───────── Ladebildschirm mit Fortschrittsbalken & Prozentanzeige ─────────
 function showIdleOverlay() {
     if (!idleOverlay) return;
@@ -187,7 +224,6 @@ function startLoadingCreep(startPct, maxPct, headlineText, detailText) {
 
 // ───────── Vollbild Auto-Hide Steuerung (blendet UI nach 3.2s aus) ─────────
 function wakeUpUiChrome() {
-    // Weckt den AudioContext bei jeder Berührung sofort auf, falls Autoplay ihn pausiert hat
     if (audioContext && audioContext.state === 'suspended' && appState === 'playing' && !isPlaybackPaused) {
         audioContext.resume().catch(() => {});
     }
@@ -197,7 +233,6 @@ function wakeUpUiChrome() {
         clearTimeout(uiIdleTimer);
         uiIdleTimer = null;
     }
-    // Nur ausblenden, wenn aktiv abgespielt wird, nicht pausiert ist und der Benutzer nicht gerade spult
     if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing && isIdleOverlayHidden()) {
         uiIdleTimer = setTimeout(() => {
             if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing) {
@@ -354,7 +389,8 @@ function createVideoCard(item) {
     const openVideo = () => {
         if (item.selection) {
             saveSearchState();
-            location.href = '/watch?selection=' + encodeURIComponent(item.selection);
+            const durParam = item.duration ? `&duration=${encodeURIComponent(item.duration)}` : '';
+            location.href = '/watch?selection=' + encodeURIComponent(item.selection) + durParam;
         }
     };
     wrap.addEventListener('click', openVideo);
@@ -539,7 +575,7 @@ function openChannelView(channelObj) {
     void runSearch({ append: false });
 }
 
-// ───────── Floating Transport Controls (Play/Pause & Wiedergabezeit) ─────────
+// ───────── Floating Transport Controls (Play/Pause, Gesamtlänge & Fortschrittsbalken) ─────────
 function formatPlaybackTime(seconds) {
     if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
     seconds = Math.floor(seconds);
@@ -549,6 +585,12 @@ function formatPlaybackTime(seconds) {
     return h > 0
         ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
         : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function setProgressBarVisualFill(perMilleValue) {
+    if (!playbackProgress) return;
+    const pct = Math.max(0, Math.min(100, (Number(perMilleValue) || 0) / 10));
+    playbackProgress.style.setProperty('--progress-pct', `${pct.toFixed(2)}%`);
 }
 
 function updatePlaybackControlsUI(currentSec) {
@@ -562,20 +604,41 @@ function updatePlaybackControlsUI(currentSec) {
         btnPause.setAttribute('aria-label', isPlaybackPaused ? 'Fortsetzen' : 'Pause');
     }
 
-    if (mediaIsLive || !(mediaDurationSec > 0)) {
-        if (playbackCurrentTime) playbackCurrentTime.textContent = mediaIsLive ? 'LIVE' : formatPlaybackTime(currentSec);
+    if (mediaIsLive) {
+        if (playbackCurrentTime) playbackCurrentTime.textContent = 'LIVE';
+        if (playbackDuration) playbackDuration.textContent = '●';
+        if (playbackProgress) {
+            playbackProgress.disabled = true;
+            playbackProgress.value = '1000';
+            setProgressBarVisualFill(1000);
+        }
+        return;
+    }
+
+    if (!(mediaDurationSec > 0)) {
+        if (playbackCurrentTime && !isUserScrubbing) {
+            playbackCurrentTime.textContent = formatPlaybackTime(currentSec);
+        }
         if (playbackDuration) playbackDuration.textContent = '--:--';
-        if (playbackProgress) playbackProgress.disabled = true;
+        if (playbackProgress) {
+            playbackProgress.disabled = true;
+            setProgressBarVisualFill(0);
+        }
         return;
     }
 
     if (playbackProgress) playbackProgress.disabled = false;
-    const clamped = Math.max(0, Math.min(mediaDurationSec, currentSec));
-    if (!isUserScrubbing) {
-        if (playbackCurrentTime) playbackCurrentTime.textContent = formatPlaybackTime(clamped);
-        if (playbackProgress) playbackProgress.value = String(Math.round((clamped / mediaDurationSec) * 1000));
-    }
     if (playbackDuration) playbackDuration.textContent = formatPlaybackTime(mediaDurationSec);
+
+    if (!isUserScrubbing) {
+        const clamped = Math.max(0, Math.min(mediaDurationSec, currentSec));
+        const sliderVal = Math.round((clamped / mediaDurationSec) * 1000);
+        if (playbackCurrentTime) playbackCurrentTime.textContent = formatPlaybackTime(clamped);
+        if (playbackProgress) {
+            playbackProgress.value = String(sliderVal);
+            setProgressBarVisualFill(sliderVal);
+        }
+    }
 }
 
 async function toggleCustomPause() {
@@ -608,17 +671,33 @@ async function toggleCustomPause() {
 }
 
 function seekCustomCanvas(targetSeconds) {
-    if ((appState !== 'playing' && appState !== 'error') || !canvasVideoMode || !sessionId || mediaIsLive || !(mediaDurationSec > 0)) return;
+    if ((appState !== 'playing' && appState !== 'resolving' && appState !== 'error') || !canvasVideoMode || !sessionId || mediaIsLive || !(mediaDurationSec > 0)) return;
     clearRecoveryTimers();
     mediaRetryCount = 0;
     appState = 'playing';
-    const clamped = Math.max(0, Math.min(mediaDurationSec - 1, Number(targetSeconds) || 0));
+    const clamped = Math.max(0, Math.min(Math.max(0, mediaDurationSec - 0.5), Number(targetSeconds) || 0));
     seekBaseSeconds = clamped;
     lastKnownPosition = clamped;
     isPlaybackPaused = false;
     updatePlaybackControlsUI(clamped);
     wakeUpUiChrome();
     void startNativeCanvasMedia(sessionId, canvas.width || 640, canvas.height || 360, mediaDurationSec, mediaIsLive, clamped, true);
+}
+
+function commitProgressBarSeek() {
+    if (!playbackProgress || !(mediaDurationSec > 0) || mediaIsLive) {
+        isUserScrubbing = false;
+        return;
+    }
+    const now = performance.now();
+    if (now - lastSeekCommitAt < 120) return; // Verhindert doppeltes Auslösen bei PointerUp + Change
+    lastSeekCommitAt = now;
+
+    const sliderVal = Number(playbackProgress.value) || 0;
+    const targetSec = (sliderVal / 1000) * mediaDurationSec;
+    isUserScrubbing = false;
+    setProgressBarVisualFill(sliderVal);
+    seekCustomCanvas(targetSec);
 }
 
 if (btnPause) {
@@ -629,19 +708,40 @@ if (btnPause) {
 }
 
 if (playbackProgress) {
-    playbackProgress.addEventListener('click', (e) => e.stopPropagation());
-    playbackProgress.addEventListener('input', () => {
+    // Verhindert, dass Klicks/Touches auf der Zeitleiste das Video auf dem Canvas pausieren
+    ['click', 'pointerdown', 'touchstart'].forEach(evtName => {
+        playbackProgress.addEventListener(evtName, (e) => {
+            e.stopPropagation();
+            if (evtName !== 'click' && mediaDurationSec > 0 && !mediaIsLive) {
+                isUserScrubbing = true;
+                wakeUpUiChrome();
+            }
+        }, { passive: true });
+    });
+
+    playbackProgress.addEventListener('input', (e) => {
+        e.stopPropagation();
         if (!(mediaDurationSec > 0) || mediaIsLive) return;
         isUserScrubbing = true;
         wakeUpUiChrome();
-        const previewSec = (Number(playbackProgress.value) / 1000) * mediaDurationSec;
+        const sliderVal = Number(playbackProgress.value) || 0;
+        const previewSec = (sliderVal / 1000) * mediaDurationSec;
+        setProgressBarVisualFill(sliderVal);
         if (playbackCurrentTime) playbackCurrentTime.textContent = formatPlaybackTime(previewSec);
     });
-    playbackProgress.addEventListener('change', () => {
-        if (!(mediaDurationSec > 0) || mediaIsLive) return;
-        const targetSec = (Number(playbackProgress.value) / 1000) * mediaDurationSec;
-        isUserScrubbing = false;
-        seekCustomCanvas(targetSec);
+
+    playbackProgress.addEventListener('change', (e) => {
+        e.stopPropagation();
+        commitProgressBarSeek();
+    });
+
+    ['pointerup', 'touchend', 'PointerCancel'].forEach(evtName => {
+        playbackProgress.addEventListener(evtName, (e) => {
+            e.stopPropagation();
+            if (isUserScrubbing) {
+                commitProgressBarSeek();
+            }
+        }, { passive: true });
     });
 }
 
@@ -654,7 +754,6 @@ presetBtns.forEach(btn => {
         presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === p));
         wakeUpUiChrome();
 
-        // Sofortiger Wechsel während der laufenden Wiedergabe an der aktuellen Sekunde!
         if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
             clearRecoveryTimers();
             mediaRetryCount = 0;
@@ -677,7 +776,6 @@ displayModeBtns.forEach(btn => {
         displayModeBtns.forEach(b => b.classList.toggle('active', b.dataset.displayMode === mode));
         wakeUpUiChrome();
 
-        // Sofortiger Modus-Wechsel (ASCII <-> Canvas)
         if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
             clearRecoveryTimers();
             mediaRetryCount = 0;
@@ -723,14 +821,13 @@ const MP3_SAMPLERATES_V1 = [44100, 48000, 32000, 0];
 const MP3_SAMPLERATES_V2 = [22050, 24000, 16000, 0];
 const MP3_SAMPLERATES_V25 = [11025, 12000, 8000, 0];
 
-// Berechnet die exakte Byte-Länge eines MP3-Frames anhand seines 4-Byte-Headers (0 = kein gültiger Header)
 function getMp3FrameLength(buf, offset) {
     if (offset + 4 > buf.length) return 0;
     if (buf[offset] !== 0xFF || (buf[offset + 1] & 0xE0) !== 0xE0) return 0;
 
     const versionBits = (buf[offset + 1] >> 3) & 0x03;
     const layerBits   = (buf[offset + 1] >> 1) & 0x03;
-    if (versionBits === 1 || layerBits !== 1) return 0; // Nur Layer III (MP3)
+    if (versionBits === 1 || layerBits !== 1) return 0;
 
     const bitrateIdx = (buf[offset + 2] >> 4) & 0x0F;
     const srIdx      = (buf[offset + 2] >> 2) & 0x03;
@@ -748,18 +845,15 @@ function getMp3FrameLength(buf, offset) {
     return Math.floor((coeff * bitrate * 1000) / sampleRate) + padding;
 }
 
-// Extrahiert ausschließlich vollständige, saubere MP3-Frames aus dem Stream-Puffer
 function extractCleanMp3Frames(buffer, minFramesRequired) {
     let startOffset = 0;
 
-    // Optionales ID3v2-Tag am Stream-Anfang überspringen
     if (buffer.length >= 10 && buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
         const id3Size = ((buffer[6] & 0x7f) << 21) | ((buffer[7] & 0x7f) << 14) | ((buffer[8] & 0x7f) << 7) | (buffer[9] & 0x7f);
         startOffset = 10 + id3Size;
         if (buffer.length <= startOffset) return null;
     }
 
-    // Ersten echten Sync-Header suchen (validiert durch den Folge-Frame)
     let firstSync = -1;
     for (let i = startOffset; i + 8 < buffer.length; i++) {
         const len1 = getMp3FrameLength(buffer, i);
@@ -773,7 +867,6 @@ function extractCleanMp3Frames(buffer, minFramesRequired) {
     }
     if (firstSync === -1) return null;
 
-    // Alle komplett im Puffer liegenden MP3-Frames abzählen
     const frames = [];
     let cursor = firstSync;
     while (cursor + 4 <= buffer.length) {
@@ -810,7 +903,6 @@ function stopCustomWebAudio() {
     activeAudioNodes = [];
     nextAudioTime = 0;
     firstAudioAnchorTime = null;
-    // WICHTIG: Kein audioContext.suspend() hier aufrufen! Das verhindert die Stummschaltungs-Race-Condition beim Start.
 }
 
 async function startHiddenWebAudio(sid, startSec = 0) {
@@ -843,7 +935,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         let isFirstChunk = true;
 
         while (customAudioReader === reader && (appState === 'playing' || appState === 'resolving')) {
-            // Backpressure: Wenn bereits über 8 Sekunden Ton im Voraus gepuffert sind, kurz warten
             while (
                 customAudioReader === reader &&
                 appState === 'playing' &&
@@ -862,7 +953,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
             merged.set(value, leftover.length);
             leftover = merged;
 
-            // 1. Paket schnell starten (ab 35 Frames ≈ 0.9s), danach größere Pakete (90 Frames ≈ 2.3s) für glasklaren Ton
             const minFrames = isFirstChunk ? 35 : 90;
             const extracted = extractCleanMp3Frames(leftover, minFrames);
             if (!extracted) continue;
@@ -870,7 +960,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
             leftover = extracted.leftover;
             isFirstChunk = false;
 
-            // Letzte 2 Frames des Vorgänger-Pakets voranstellen (hält das MP3-Bit-Reservoir intakt und verhindert Knackser)
             let decodeBytes = extracted.cleanBytes;
             let overlapFrames = 0;
             if (prevTailBytes && prevTailFrames > 0) {
@@ -887,7 +976,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                     await audioContext.resume().catch(() => {});
                 }
 
-                // Sequenzielles Await verhindert, dass sich Audio-Pakete überholen!
                 const audioBuffer = await audioContext.decodeAudioData(decodeBytes.buffer.slice(0));
                 if (customAudioReader !== reader || (appState !== 'playing' && appState !== 'resolving')) break;
 
@@ -924,7 +1012,6 @@ async function startHiddenWebAudio(sid, startSec = 0) {
             }
         }
 
-        // Falls der Audio-Stream vorzeitig abreißt -> Automatisch ab der aktuellen Sekunde neu verbinden
         if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
             const curSec = getCurrentPlaybackSecond();
             if (mediaIsLive || !(mediaDurationSec > 0) || curSec < mediaDurationSec - 4) {
@@ -1204,7 +1291,8 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     clearRecoveryTimers();
     canvasVideoMode = true;
     targetFps = 30;
-    mediaDurationSec = Number(durationSeconds) || mediaDurationSec || 0;
+    const parsedDur = parseDurationSeconds(durationSeconds);
+    if (parsedDur > 0) mediaDurationSec = parsedDur;
     mediaIsLive = Boolean(isLive);
     seekBaseSeconds = Number(startSec) || 0;
     lastKnownPosition = seekBaseSeconds;
@@ -1258,6 +1346,15 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             return;
         }
 
+        // Optionaler Fallback: Dauer aus HTTP-Header lesen, falls vom Server gesetzt
+        const headerDur = parseDurationSeconds(
+            response.headers.get('X-Media-Duration') || response.headers.get('X-Content-Duration')
+        );
+        if (headerDur > 0 && !(mediaDurationSec > 0)) {
+            mediaDurationSec = headerDur;
+            updatePlaybackControlsUI(getCurrentPlaybackSecond());
+        }
+
         if (!isRecovery && !initialPlaybackShown) {
             startLoadingCreep(75, 92, 'Stream empfangen...', 'Initialisiere WebCodecs Decoder...');
         }
@@ -1278,8 +1375,11 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             }
             state.track = track;
             state.timescale = track.timescale || 1;
-            if (!mediaDurationSec && info.duration && info.timescale) {
-                mediaDurationSec = info.duration / info.timescale;
+            if (!(mediaDurationSec > 0)) {
+                const infoDur = (info.duration && info.timescale) ? (info.duration / info.timescale) : 0;
+                const trackDur = (track.duration && track.timescale) ? (track.duration / track.timescale) : 0;
+                if (infoDur > 1) mediaDurationSec = infoDur;
+                else if (trackDur > 1) mediaDurationSec = trackDur;
             }
             const description = getMp4VideoDescription(mp4File, track);
             const config = {
@@ -1321,7 +1421,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
 
-                            // Ladebildschirm dauerhaft ausblenden
                             hideIdleOverlay();
 
                             canvas.style.display = 'block';
@@ -1421,6 +1520,11 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
 async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = false) {
     const params = new URLSearchParams(location.search);
     const selection = directSelection || params.get('selection');
+    const urlDuration = parseDurationSeconds(params.get('duration'));
+    if (urlDuration > 0 && !(mediaDurationSec > 0)) {
+        mediaDurationSec = urlDuration;
+    }
+
     const query = (queryInput && queryInput.value) ? queryInput.value.trim() : '';
     if (!selection && !query) {
         if (queryInput) queryInput.focus();
@@ -1490,7 +1594,8 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
 
     sessionId        = data.session_id;
     appState         = 'playing';
-    mediaDurationSec = Number(data.duration) || mediaDurationSec || 0;
+    const apiDur     = extractDurationFromPayload(data);
+    if (apiDur > 0) mediaDurationSec = apiDur;
     mediaIsLive      = Boolean(data.is_live);
     setUiState('playing');
     updateTitle(data.title, data.is_live);
@@ -1545,8 +1650,10 @@ function startPoll() {
             return;
         }
         if (data.title) updateTitle(data.title, data.is_live);
-        if (data.duration && !mediaDurationSec) {
-            mediaDurationSec = Number(data.duration) || 0;
+        const polledDur = extractDurationFromPayload(data);
+        if (polledDur > 0 && polledDur !== mediaDurationSec) {
+            mediaDurationSec = polledDur;
+            updatePlaybackControlsUI(getCurrentPlaybackSecond());
         }
         if (data.state === 'error') {
             scheduleMediaRecovery(data.error || 'Session-Resync', true);
@@ -1844,7 +1951,6 @@ window.addEventListener('resize', () => {
 });
 
 canvas.addEventListener('click', () => {
-    // Wenn das UI ausgeblendet war, holt der erste Tipp auf das Bild nur die Steuerelemente zurück
     if (document.body.classList.contains('ui-idle')) {
         wakeUpUiChrome();
         return;
