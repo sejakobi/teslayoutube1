@@ -1,11 +1,14 @@
 // CYBER.play / ASCILINE YouTube streamer — Tesla browser frontend.
-// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Scrubbable Progress Bar,
-//           Loading Progress %, Immersive Fullscreen, Auto-Recovery, MP3 Frame-Sync & Gapless WebAudio
+// Features: YouTube Portal Homepage (Categories, Watch History with Resume Progress, Watch Later),
+//           Instant Quality/Mode Switch at Exact Timestamp, Floating Auto-Hide Controls,
+//           Scrubbable Progress Bar, Loading Progress %, Auto-Recovery, MP3 Frame-Sync WebAudio
 
 'use strict';
 
 // ───────── DOM Elements ─────────
 const queryInput          = document.getElementById('search-query') || document.getElementById('query-input');
+const searchForm          = document.getElementById('search-form');
+const btnClearQuery       = document.getElementById('btn-clear-query');
 const btnPlay             = document.getElementById('btn-play');
 const btnSearch           = document.getElementById('search-button') || document.getElementById('btn-search');
 const btnCloseSearch      = document.getElementById('btn-close-search');
@@ -23,13 +26,26 @@ const volumeSlider        = document.getElementById('volume-slider');
 const playerContainer     = document.getElementById('player-container');
 const asciiPlayer         = document.getElementById('ascii-player');
 const canvas              = document.getElementById('ascii-canvas');
-// WICHTIG für Tesla (Linux/X11 Chromium 100): kein desynchronized: true verwenden!
-const ctx                 = canvas.getContext('2d', { alpha: false });
+const ctx                 = canvas ? canvas.getContext('2d', { alpha: false }) : null;
 const idleOverlay         = document.getElementById('idle-overlay');
 const idleSub             = document.getElementById('idle-sub');
 const idleArrow           = document.getElementById('idle-arrow');
 const loadingBarFill      = document.getElementById('loading-bar-fill');
 const loadingPercent      = document.getElementById('loading-percent');
+
+// YouTube Hub Homepage Elements
+const btnToggleSidebar        = document.getElementById('btn-toggle-sidebar');
+const navItems                = document.querySelectorAll('.nav-item[data-nav]');
+const quickTopicBtns          = document.querySelectorAll('.nav-subitem[data-quick-topic]');
+const categoryChips           = document.querySelectorAll('.chip[data-category-query]');
+const categoryBar             = document.getElementById('category-bar');
+const continueWatchingSection = document.getElementById('continue-watching-section');
+const continueWatchingGrid    = document.getElementById('continue-watching-grid');
+const btnOpenFullHistory      = document.getElementById('btn-open-full-history');
+const historyActions          = document.getElementById('history-actions');
+const btnClearHistory         = document.getElementById('btn-clear-history');
+const badgeHistoryCount       = document.getElementById('badge-history-count');
+const badgeSavedCount         = document.getElementById('badge-saved-count');
 
 // Floating Transport Controls
 const playbackControls    = document.getElementById('playback-controls');
@@ -82,8 +98,10 @@ let isPlaybackPaused  = false;
 let pauseStartedAt    = 0;
 let isUserScrubbing   = false;
 let lastSeekCommitAt  = 0;
+let currentWatchMeta  = null;
+let lastHistorySaveAt = 0;
 
-// Auto-Hide Fullscreen UI Timer (blendet nach 3.2s Inaktivität alles Störende aus)
+// Auto-Hide Fullscreen UI Timer
 const UI_IDLE_HIDE_MS = 3200;
 let uiIdleTimer       = null;
 
@@ -98,10 +116,15 @@ let mediaRetryCount     = 0;
 let mediaRetryTimer     = null;
 let lastKnownPosition   = 0;
 
-// Search State
-const STORAGE_KEY     = 'asciline_search_state_v1';
+// Search, History & Watch-Later State
+const STORAGE_KEY         = 'asciline_search_state_v2';
+const HISTORY_STORAGE_KEY = 'asciline_watch_history_v1';
+const SAVED_STORAGE_KEY   = 'asciline_watch_later_v1';
+const CURRENT_META_KEY    = 'asciline_active_video_meta_v1';
+
 let searchRequestNo   = 0;
 let currentSearchType = 'video';
+let currentNavView    = 'home'; // home | history | saved | channels
 let activeChannel     = null;
 let nextPageToken     = '';
 let isFetchingMore    = false;
@@ -137,7 +160,7 @@ let fpsBelowThreshold = false;
 let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
-// ───────── Dauer-Parser (unterstützt Zahlen, Sekunden-Strings und HH:MM:SS) ─────────
+// ───────── Dauer- & Zeit-Helfer ─────────
 function parseDurationSeconds(raw) {
     if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw;
     if (typeof raw === 'string') {
@@ -171,6 +194,140 @@ function extractDurationFromPayload(data) {
         if (parsed > 0) return parsed;
     }
     return 0;
+}
+
+function formatPlaybackTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+    seconds = Math.floor(seconds);
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return h > 0
+        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// ───────── Verlauf (Watch History) & Später ansehen (Watch Later) ─────────
+function getWatchHistory() {
+    try {
+        const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+        const list = raw ? JSON.parse(raw) : [];
+        return Array.isArray(list) ? list : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveWatchHistoryList(list) {
+    try {
+        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(list.slice(0, 60)));
+        updateSidebarBadges();
+    } catch (_) {}
+}
+
+function getSavedVideos() {
+    try {
+        const raw = localStorage.getItem(SAVED_STORAGE_KEY);
+        const list = raw ? JSON.parse(raw) : [];
+        return Array.isArray(list) ? list : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveSavedVideosList(list) {
+    try {
+        localStorage.setItem(SAVED_STORAGE_KEY, JSON.stringify(list.slice(0, 80)));
+        updateSidebarBadges();
+    } catch (_) {}
+}
+
+function getVideoKey(item) {
+    if (!item) return '';
+    return item.video_id || item.selection || item.title || '';
+}
+
+function findHistoryEntry(item) {
+    const key = getVideoKey(item);
+    if (!key) return null;
+    const history = getWatchHistory();
+    return history.find(h => (h.video_id && h.video_id === item.video_id) || (h.selection && h.selection === item.selection) || h.title === item.title) || null;
+}
+
+function isVideoSaved(item) {
+    const key = getVideoKey(item);
+    if (!key) return false;
+    return getSavedVideos().some(s => getVideoKey(s) === key);
+}
+
+function toggleSaveVideo(item) {
+    const key = getVideoKey(item);
+    if (!key) return false;
+    const list = getSavedVideos();
+    const idx = list.findIndex(s => getVideoKey(s) === key);
+    if (idx !== -1) {
+        list.splice(idx, 1);
+        saveSavedVideosList(list);
+        return false;
+    } else {
+        list.unshift({
+            video_id: item.video_id || '',
+            selection: item.selection || '',
+            title: item.title || 'Unbenanntes Video',
+            channel: item.channel || '',
+            channel_id: item.channel_id || '',
+            thumbnail: item.thumbnail || '',
+            duration: parseDurationSeconds(item.duration) || 0,
+            published_at: item.published_at || '',
+            saved_at: Date.now(),
+        });
+        saveSavedVideosList(list);
+        return true;
+    }
+}
+
+function recordWatchProgress(positionSec, durationSec) {
+    if (!currentWatchMeta || !currentWatchMeta.selection) return;
+    const pos = Math.max(0, Number(positionSec) || 0);
+    const dur = Math.max(0, Number(durationSec) || currentWatchMeta.duration || 0);
+
+    const list = getWatchHistory();
+    const existingIdx = list.findIndex(h =>
+        (currentWatchMeta.video_id && h.video_id === currentWatchMeta.video_id) ||
+        h.selection === currentWatchMeta.selection ||
+        (currentWatchMeta.title && h.title === currentWatchMeta.title)
+    );
+
+    const entry = {
+        video_id: currentWatchMeta.video_id || (existingIdx !== -1 ? list[existingIdx].video_id : ''),
+        selection: currentWatchMeta.selection,
+        title: currentWatchMeta.title || (existingIdx !== -1 ? list[existingIdx].title : 'YouTube Video'),
+        channel: currentWatchMeta.channel || (existingIdx !== -1 ? list[existingIdx].channel : ''),
+        channel_id: currentWatchMeta.channel_id || (existingIdx !== -1 ? list[existingIdx].channel_id : ''),
+        thumbnail: currentWatchMeta.thumbnail || (existingIdx !== -1 ? list[existingIdx].thumbnail : ''),
+        duration: dur || (existingIdx !== -1 ? list[existingIdx].duration : 0),
+        resume_sec: pos > 3 ? Math.floor(pos) : (existingIdx !== -1 ? list[existingIdx].resume_sec : 0),
+        watched_at: Date.now(),
+    };
+
+    if (existingIdx !== -1) {
+        list.splice(existingIdx, 1);
+    }
+    list.unshift(entry);
+    saveWatchHistoryList(list);
+}
+
+function updateSidebarBadges() {
+    const histCount = getWatchHistory().length;
+    const savedCount = getSavedVideos().length;
+    if (badgeHistoryCount) {
+        badgeHistoryCount.textContent = String(histCount);
+        badgeHistoryCount.classList.toggle('hidden', histCount === 0);
+    }
+    if (badgeSavedCount) {
+        badgeSavedCount.textContent = String(savedCount);
+        badgeSavedCount.classList.toggle('hidden', savedCount === 0);
+    }
 }
 
 // ───────── Ladebildschirm mit Fortschrittsbalken & Prozentanzeige ─────────
@@ -314,8 +471,8 @@ function scheduleMediaRecovery(reason, forceNewSession = false) {
         } else {
             void startNativeCanvasMedia(
                 sessionId,
-                canvas.width || 640,
-                canvas.height || 360,
+                canvas ? (canvas.width || 640) : 640,
+                canvas ? (canvas.height || 360) : 360,
                 mediaDurationSec,
                 mediaIsLive,
                 resumeSec,
@@ -325,13 +482,14 @@ function scheduleMediaRecovery(reason, forceNewSession = false) {
     }, delayMs);
 }
 
-// ───────── Search & Infinite Scroll Logic ─────────
+// ───────── YouTube Startseite, Kategorien, Verlauf & Suche ─────────
 function saveSearchState() {
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify({
             query: queryInput ? queryInput.value.trim() : '',
             searchType: currentSearchType,
             activeChannel: activeChannel,
+            navView: currentNavView,
         }));
     } catch (_) {}
 }
@@ -348,6 +506,14 @@ function updateFilterUI() {
     if (tabVideos) tabVideos.classList.toggle('active', !isChanView && currentSearchType === 'video');
     if (tabChannels) tabChannels.classList.toggle('active', !isChanView && currentSearchType === 'channel');
 
+    navItems.forEach(btn => {
+        btn.classList.toggle('active', !isChanView && btn.dataset.nav === currentNavView);
+    });
+
+    if (historyActions) {
+        historyActions.classList.toggle('hidden', currentNavView !== 'history' || isChanView);
+    }
+
     if (isChanView && channelBanner) {
         channelBanner.classList.remove('hidden');
         if (channelTitle) channelTitle.textContent = activeChannel.title || 'YouTube-Kanal';
@@ -363,22 +529,65 @@ function updateFilterUI() {
         }
     } else {
         if (channelBanner) channelBanner.classList.add('hidden');
-        if (document.getElementById('results-title')) {
-            document.getElementById('results-title').textContent = currentSearchType === 'channel' ? 'Gefundene Kanäle' : 'Suchergebnisse';
+        const titleEl = document.getElementById('results-title');
+        if (titleEl) {
+            if (currentNavView === 'history') titleEl.textContent = '🕒 Angesehene Videos (Verlauf)';
+            else if (currentNavView === 'saved') titleEl.textContent = '⏱️ Später ansehen (Merkliste)';
+            else if (currentSearchType === 'channel') titleEl.textContent = '📺 Gefundene YouTube-Kanäle';
+            else {
+                const q = queryInput ? queryInput.value.trim() : '';
+                titleEl.textContent = q ? `Ergebnisse für „${q}“` : '🔥 Empfohlene Videos';
+            }
         }
     }
+}
+
+function navigateToWatch(item, forceResumeSec = null) {
+    if (!item || !item.selection) return;
+    saveSearchState();
+
+    const hist = findHistoryEntry(item);
+    const resumeSec = forceResumeSec !== null
+        ? forceResumeSec
+        : (item.resume_sec || (hist ? hist.resume_sec : 0) || 0);
+    const dur = parseDurationSeconds(item.duration) || (hist ? hist.duration : 0) || 0;
+
+    // Aktuelle Video-Metadaten für den Verlauf zwischenspeichern
+    try {
+        localStorage.setItem(CURRENT_META_KEY, JSON.stringify({
+            video_id: item.video_id || '',
+            selection: item.selection,
+            title: item.title || 'YouTube Video',
+            channel: item.channel || '',
+            channel_id: item.channel_id || '',
+            thumbnail: item.thumbnail || '',
+            duration: dur,
+            resume_sec: resumeSec,
+        }));
+    } catch (_) {}
+
+    let url = '/watch?selection=' + encodeURIComponent(item.selection);
+    if (dur > 0) url += '&duration=' + encodeURIComponent(Math.round(dur));
+    if (resumeSec > 3 && (!dur || resumeSec < dur - 5)) {
+        url += '&start=' + encodeURIComponent(Math.floor(resumeSec));
+    }
+    location.href = url;
 }
 
 function createVideoCard(item) {
     const card = document.createElement('div');
     card.className = 'result';
 
+    const histEntry = findHistoryEntry(item);
+    const durSec = parseDurationSeconds(item.duration) || (histEntry ? histEntry.duration : 0) || 0;
+    const resumeSec = Number(item.resume_sec ?? (histEntry ? histEntry.resume_sec : 0)) || 0;
+
     const wrap = document.createElement('div');
     wrap.className = 'thumb-wrap';
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.alt = '';
-    img.src = item.thumbnail || '';
+    img.src = item.thumbnail || (item.video_id ? `https://i.ytimg.com/vi/${item.video_id}/hqdefault.jpg` : '');
     wrap.append(img);
 
     const mark = document.createElement('span');
@@ -386,13 +595,45 @@ function createVideoCard(item) {
     mark.textContent = '▶';
     wrap.append(mark);
 
-    const openVideo = () => {
-        if (item.selection) {
-            saveSearchState();
-            const durParam = item.duration ? `&duration=${encodeURIComponent(item.duration)}` : '';
-            location.href = '/watch?selection=' + encodeURIComponent(item.selection) + durParam;
+    // Dauer-Badge auf dem Thumbnail
+    if (durSec > 0) {
+        const durBadge = document.createElement('span');
+        durBadge.className = 'thumb-duration';
+        durBadge.textContent = formatPlaybackTime(durSec);
+        wrap.append(durBadge);
+    }
+
+    // Später ansehen Button (＋ / ✓)
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    const initiallySaved = isVideoSaved(item);
+    saveBtn.className = 'thumb-action-btn' + (initiallySaved ? ' saved' : '');
+    saveBtn.textContent = initiallySaved ? '✓' : '＋';
+    saveBtn.title = initiallySaved ? 'Aus „Später ansehen“ entfernen' : 'Zu „Später ansehen“ hinzufügen';
+    saveBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const nowSaved = toggleSaveVideo(item);
+        saveBtn.classList.toggle('saved', nowSaved);
+        saveBtn.textContent = nowSaved ? '✓' : '＋';
+        if (currentNavView === 'saved' && !nowSaved) {
+            renderLocalCollectionView('saved');
         }
-    };
+    });
+    wrap.append(saveBtn);
+
+    // Roter Fortschrittsbalken unten im Thumbnail (falls schon angeschaut)
+    if (resumeSec > 3) {
+        const track = document.createElement('div');
+        track.className = 'thumb-progress-track';
+        const fill = document.createElement('div');
+        fill.className = 'thumb-progress-fill';
+        const pct = durSec > 0 ? Math.min(100, Math.max(6, Math.round((resumeSec / durSec) * 100))) : 35;
+        fill.style.width = `${pct}%`;
+        track.append(fill);
+        wrap.append(track);
+    }
+
+    const openVideo = () => navigateToWatch(item);
     wrap.addEventListener('click', openVideo);
 
     const body = document.createElement('div');
@@ -406,7 +647,7 @@ function createVideoCard(item) {
     const chBtn = document.createElement('button');
     chBtn.type = 'button';
     chBtn.className = 'result-channel-btn';
-    chBtn.textContent = '📺 ' + (item.channel || 'Unbekannter Kanal');
+    chBtn.textContent = '📺 ' + (item.channel || 'YouTube Kanal');
     chBtn.title = 'Alle Videos dieses Kanals anzeigen';
     chBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -417,15 +658,25 @@ function createVideoCard(item) {
                 description: '',
                 thumbnail: '',
             });
+        } else if (item.channel) {
+            if (queryInput) queryInput.value = item.channel;
+            currentNavView = 'home';
+            currentSearchType = 'video';
+            void runSearch({ append: false });
         }
     });
 
     const meta = document.createElement('div');
     meta.className = 'result-meta';
     const m1 = document.createElement('span');
-    m1.textContent = item.published_at ? new Date(item.published_at).toLocaleDateString('de-DE') : 'VIDEO';
+    if (resumeSec > 3) {
+        m1.className = 'resume-pill';
+        m1.textContent = `▶ Ab ${formatPlaybackTime(resumeSec)} weiter`;
+    } else {
+        m1.textContent = item.published_at ? new Date(item.published_at).toLocaleDateString('de-DE') : 'VIDEO';
+    }
     const m2 = document.createElement('span');
-    m2.textContent = 'CANVAS STREAM ↗';
+    m2.textContent = 'STREAM ↗';
     meta.append(m1, m2);
 
     body.append(t, chBtn, meta);
@@ -478,8 +729,63 @@ function createChannelCard(item) {
     return card;
 }
 
-async function runSearch({ append = false } = {}) {
-    const q = queryInput ? queryInput.value.trim() : '';
+function renderContinueWatchingShelf() {
+    if (!continueWatchingSection || !continueWatchingGrid) return;
+    if (currentNavView !== 'home' || activeChannel) {
+        continueWatchingSection.classList.add('hidden');
+        return;
+    }
+
+    const history = getWatchHistory().filter(item => item && item.selection);
+    if (history.length === 0) {
+        continueWatchingSection.classList.add('hidden');
+        return;
+    }
+
+    continueWatchingSection.classList.remove('hidden');
+    continueWatchingGrid.replaceChildren();
+    for (const item of history.slice(0, 4)) {
+        continueWatchingGrid.append(createVideoCard(item));
+    }
+}
+
+function renderLocalCollectionView(viewType) {
+    currentNavView = viewType;
+    activeChannel = null;
+    nextPageToken = '';
+    updateFilterUI();
+    renderContinueWatchingShelf();
+
+    const list = viewType === 'history' ? getWatchHistory() : getSavedVideos();
+    if (searchResults) searchResults.replaceChildren();
+    if (document.getElementById('results-count')) {
+        document.getElementById('results-count').textContent = `${list.length} VIDEOS`;
+    }
+
+    if (list.length === 0) {
+        if (searchMessage) {
+            searchMessage.textContent = viewType === 'history'
+                ? 'Dein Wiedergabeverlauf ist noch leer. Starte einfach ein Video auf der Startseite!'
+                : 'Du hast noch keine Videos unter „Später ansehen“ gespeichert (Klicke auf ＋ oben rechts auf einem Video).';
+        }
+        return;
+    }
+
+    if (searchMessage) {
+        searchMessage.textContent = viewType === 'history'
+            ? `${list.length} Videos im Verlauf · Klicke auf ein Video, um exakt an deiner letzten Position fortzusetzen.`
+            : `${list.length} gespeicherte Videos in deiner Merkliste.`;
+    }
+
+    if (searchResults) {
+        for (const item of list) {
+            searchResults.append(createVideoCard(item));
+        }
+    }
+}
+
+async function runSearch({ append = false, overrideQuery = '' } = {}) {
+    const q = (overrideQuery || (queryInput ? queryInput.value.trim() : '')).trim();
     if (!q && !activeChannel) return;
     if (append && (!nextPageToken || isFetchingMore)) return;
 
@@ -493,10 +799,11 @@ async function runSearch({ append = false } = {}) {
         totalLoaded = 0;
         if (searchMessage) {
             searchMessage.className = 'message loading';
-            searchMessage.textContent = activeChannel ? 'Kanalvideos werden geladen …' : 'Suche läuft …';
+            searchMessage.textContent = activeChannel ? 'Kanalvideos werden geladen …' : 'Videos werden geladen …';
         }
-        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'LOADING';
+        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'LÄDT…';
         updateFilterUI();
+        renderContinueWatchingShelf();
         saveSearchState();
     } else {
         if (scrollLoader) scrollLoader.classList.remove('hidden');
@@ -528,11 +835,11 @@ async function runSearch({ append = false } = {}) {
         }
 
         const items = data.results || [];
-        nextPageToken = data.next_page_token || '';
+        nextPageToken = data.next_page_token || data.nextPageToken || '';
         totalLoaded += items.length;
 
         if (document.getElementById('results-count')) {
-            document.getElementById('results-count').textContent = String(totalLoaded).padStart(2, '0') + ' ITEMS';
+            document.getElementById('results-count').textContent = String(totalLoaded).padStart(2, '0') + ' TREFFER';
         }
         if (searchMessage) searchMessage.className = 'message';
 
@@ -544,7 +851,7 @@ async function runSearch({ append = false } = {}) {
         if (searchMessage) {
             searchMessage.textContent = nextPageToken
                 ? `${totalLoaded} Ergebnisse geladen · Scrolle nach unten für mehr`
-                : `${totalLoaded} Ergebnisse geladen · Alle Ergebnisse angezeigt`;
+                : `${totalLoaded} Ergebnisse geladen`;
         }
 
         if (searchResults) {
@@ -557,7 +864,7 @@ async function runSearch({ append = false } = {}) {
         if (id === searchRequestNo && searchMessage) {
             searchMessage.className = 'message';
             searchMessage.textContent = err.message || 'Die Suche ist fehlgeschlagen.';
-            if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'ERROR';
+            if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'FEHLER';
         }
     } finally {
         if (id === searchRequestNo) {
@@ -570,23 +877,168 @@ async function runSearch({ append = false } = {}) {
 
 function openChannelView(channelObj) {
     activeChannel = channelObj;
+    currentNavView = 'home';
     updateFilterUI();
     window.scrollTo({ top: 0, behavior: 'smooth' });
     void runSearch({ append: false });
 }
 
-// ───────── Floating Transport Controls (Play/Pause, Gesamtlänge & Fortschrittsbalken) ─────────
-function formatPlaybackTime(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-    seconds = Math.floor(seconds);
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = seconds % 60;
-    return h > 0
-        ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-        : `${m}:${String(s).padStart(2, '0')}`;
+// ───────── Homepage Event-Listener (YouTube Portal) ─────────
+if (location.pathname !== '/watch') {
+    updateSidebarBadges();
+
+    if (btnToggleSidebar) {
+        btnToggleSidebar.addEventListener('click', () => {
+            document.body.classList.toggle('sidebar-collapsed');
+        });
+    }
+
+    if (searchForm) {
+        searchForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            activeChannel = null;
+            currentNavView = currentSearchType === 'channel' ? 'channels' : 'home';
+            categoryChips.forEach(c => c.classList.remove('active'));
+            void runSearch({ append: false });
+        });
+    }
+
+    if (queryInput && btnClearQuery) {
+        const toggleClear = () => btnClearQuery.classList.toggle('hidden', !queryInput.value);
+        queryInput.addEventListener('input', toggleClear);
+        btnClearQuery.addEventListener('click', () => {
+            queryInput.value = '';
+            toggleClear();
+            queryInput.focus();
+        });
+    }
+
+    if (tabVideos) {
+        tabVideos.addEventListener('click', () => {
+            currentSearchType = 'video';
+            currentNavView = 'home';
+            activeChannel = null;
+            updateFilterUI();
+            if (queryInput && queryInput.value.trim()) void runSearch({ append: false });
+        });
+    }
+
+    if (tabChannels) {
+        tabChannels.addEventListener('click', () => {
+            currentSearchType = 'channel';
+            currentNavView = 'channels';
+            activeChannel = null;
+            updateFilterUI();
+            const q = (queryInput && queryInput.value.trim()) ? queryInput.value.trim() : 'Tesla & Technik Deutsch';
+            if (queryInput && !queryInput.value.trim()) queryInput.value = q;
+            void runSearch({ append: false, overrideQuery: q });
+        });
+    }
+
+    navItems.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = btn.dataset.nav;
+            activeChannel = null;
+            if (target === 'history') {
+                renderLocalCollectionView('history');
+            } else if (target === 'saved') {
+                renderLocalCollectionView('saved');
+            } else if (target === 'channels') {
+                currentNavView = 'channels';
+                currentSearchType = 'channel';
+                const q = (queryInput && queryInput.value.trim()) || 'Technik & Wissen Deutsch';
+                void runSearch({ append: false, overrideQuery: q });
+            } else {
+                currentNavView = 'home';
+                currentSearchType = 'video';
+                const activeChip = document.querySelector('.chip.active');
+                const defaultQ = activeChip ? activeChip.dataset.categoryQuery : 'Aktuelle Trends & Highlights Deutsch';
+                void runSearch({ append: false, overrideQuery: (queryInput && queryInput.value.trim()) || defaultQ });
+            }
+        });
+    });
+
+    categoryChips.forEach(chip => {
+        chip.addEventListener('click', () => {
+            categoryChips.forEach(c => c.classList.toggle('active', c === chip));
+            activeChannel = null;
+            currentNavView = 'home';
+            currentSearchType = 'video';
+            const catQuery = chip.dataset.categoryQuery || '';
+            if (queryInput) queryInput.value = '';
+            if (btnClearQuery) btnClearQuery.classList.add('hidden');
+            if (document.getElementById('results-title')) {
+                document.getElementById('results-title').textContent = chip.textContent;
+            }
+            void runSearch({ append: false, overrideQuery: catQuery });
+        });
+    });
+
+    quickTopicBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const topic = btn.dataset.quickTopic || '';
+            activeChannel = null;
+            currentNavView = 'home';
+            currentSearchType = 'video';
+            if (queryInput) queryInput.value = topic;
+            if (btnClearQuery) btnClearQuery.classList.remove('hidden');
+            categoryChips.forEach(c => c.classList.remove('active'));
+            void runSearch({ append: false, overrideQuery: topic });
+        });
+    });
+
+    if (btnCloseChannel) {
+        btnCloseChannel.addEventListener('click', () => {
+            activeChannel = null;
+            currentNavView = 'home';
+            updateFilterUI();
+            const q = (queryInput && queryInput.value.trim()) || 'Aktuelle Trends & Highlights Deutsch';
+            void runSearch({ append: false, overrideQuery: q });
+        });
+    }
+
+    if (btnOpenFullHistory) {
+        btnOpenFullHistory.addEventListener('click', () => {
+            renderLocalCollectionView('history');
+        });
+    }
+
+    if (btnClearHistory) {
+        btnClearHistory.addEventListener('click', () => {
+            saveWatchHistoryList([]);
+            renderLocalCollectionView('history');
+        });
+    }
+
+    // Infinite Scroll Observer
+    if (scrollSentinel && 'IntersectionObserver' in window) {
+        const obs = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting && nextPageToken && !isFetchingMore && (currentNavView === 'home' || currentNavView === 'channels')) {
+                    const activeChip = document.querySelector('.chip.active');
+                    const fallbackQ = activeChip ? activeChip.dataset.categoryQuery : 'Aktuelle Trends & Highlights Deutsch';
+                    void runSearch({ append: true, overrideQuery: (queryInput && queryInput.value.trim()) || fallbackQ });
+                }
+            }
+        }, { rootMargin: '320px' });
+        obs.observe(scrollSentinel);
+    }
+
+    // Beim Starten der Startseite automatisch "Weiterschauen" + Start-Feed laden
+    window.addEventListener('DOMContentLoaded', () => {
+        renderContinueWatchingShelf();
+        const saved = loadSearchState();
+        if (saved && saved.query && queryInput) {
+            queryInput.value = saved.query;
+            if (btnClearQuery) btnClearQuery.classList.remove('hidden');
+            void runSearch({ append: false, overrideQuery: saved.query });
+        } else {
+            void runSearch({ append: false, overrideQuery: 'Aktuelle Trends & Highlights Deutsch' });
+        }
+    });
 }
 
+// ───────── Floating Transport Controls (Play/Pause, Gesamtlänge & Fortschrittsbalken) ─────────
 function setProgressBarVisualFill(perMilleValue) {
     if (!playbackProgress) return;
     const pct = Math.max(0, Math.min(100, (Number(perMilleValue) || 0) / 10));
@@ -602,6 +1054,13 @@ function updatePlaybackControlsUI(currentSec) {
     if (btnPause) {
         btnPause.textContent = isPlaybackPaused ? '▶' : 'Ⅱ';
         btnPause.setAttribute('aria-label', isPlaybackPaused ? 'Fortsetzen' : 'Pause');
+    }
+
+    // Periodisch alle 2.5 Sekunden den Fortschritt für den Verlauf speichern
+    const now = performance.now();
+    if (currentSec > 3 && now - lastHistorySaveAt > 2500) {
+        lastHistorySaveAt = now;
+        recordWatchProgress(currentSec, mediaDurationSec);
     }
 
     if (mediaIsLive) {
@@ -647,6 +1106,7 @@ async function toggleCustomPause() {
 
     if (isPlaybackPaused) {
         pauseStartedAt = performance.now();
+        recordWatchProgress(getCurrentPlaybackSecond(), mediaDurationSec);
         if (audioContext && audioContext.state === 'running') {
             await audioContext.suspend().catch(() => {});
         }
@@ -679,6 +1139,7 @@ function seekCustomCanvas(targetSeconds) {
     seekBaseSeconds = clamped;
     lastKnownPosition = clamped;
     isPlaybackPaused = false;
+    recordWatchProgress(clamped, mediaDurationSec);
     updatePlaybackControlsUI(clamped);
     wakeUpUiChrome();
     void startNativeCanvasMedia(sessionId, canvas.width || 640, canvas.height || 360, mediaDurationSec, mediaIsLive, clamped, true);
@@ -690,7 +1151,7 @@ function commitProgressBarSeek() {
         return;
     }
     const now = performance.now();
-    if (now - lastSeekCommitAt < 120) return; // Verhindert doppeltes Auslösen bei PointerUp + Change
+    if (now - lastSeekCommitAt < 120) return;
     lastSeekCommitAt = now;
 
     const sliderVal = Number(playbackProgress.value) || 0;
@@ -708,7 +1169,6 @@ if (btnPause) {
 }
 
 if (playbackProgress) {
-    // Verhindert, dass Klicks/Touches auf der Zeitleiste das Video auf dem Canvas pausieren
     ['click', 'pointerdown', 'touchstart'].forEach(evtName => {
         playbackProgress.addEventListener(evtName, (e) => {
             e.stopPropagation();
@@ -735,7 +1195,7 @@ if (playbackProgress) {
         commitProgressBarSeek();
     });
 
-    ['pointerup', 'touchend', 'PointerCancel'].forEach(evtName => {
+    ['pointerup', 'touchend', 'pointercancel'].forEach(evtName => {
         playbackProgress.addEventListener(evtName, (e) => {
             e.stopPropagation();
             if (isUserScrubbing) {
@@ -745,7 +1205,7 @@ if (playbackProgress) {
     });
 }
 
-// ───────── Direkt-Wechsel für Qualitäts-Presets & Darstellungsmodus ─────────
+// ───────── Direkt-Wechsel für Qualitäts-Presets & Darstellungsmodus (MIT exakter Zeitfortsetzung) ─────────
 presetBtns.forEach(btn => {
     btn.addEventListener('click', () => {
         const p = btn.dataset.preset;
@@ -757,9 +1217,14 @@ presetBtns.forEach(btn => {
         if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
             clearRecoveryTimers();
             mediaRetryCount = 0;
+            // Exakte aktuelle Wiedergabesekunde vor dem Umschalten sichern!
             const resumeSec = getCurrentPlaybackSecond();
+            seekBaseSeconds = resumeSec;
+            lastKnownPosition = resumeSec;
+            recordWatchProgress(resumeSec, mediaDurationSec);
+
             if (presetHint) {
-                presetHint.textContent = `Qualität wird auf ${p.toUpperCase()} umgestellt…`;
+                presetHint.textContent = `Qualität ${p.toUpperCase()} ab ${formatPlaybackTime(resumeSec)}…`;
                 presetHint.classList.remove('hidden');
             }
             void doPlay(resumeSec, null, true);
@@ -780,6 +1245,9 @@ displayModeBtns.forEach(btn => {
             clearRecoveryTimers();
             mediaRetryCount = 0;
             const resumeSec = getCurrentPlaybackSecond();
+            seekBaseSeconds = resumeSec;
+            lastKnownPosition = resumeSec;
+            recordWatchProgress(resumeSec, mediaDurationSec);
             void doPlay(resumeSec, null, true);
         }
     });
@@ -1038,6 +1506,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
 
 // ───────── Canvas Setup ─────────
 function buildCanvas(cols, rows) {
+    if (!canvas || !ctx) return;
     gridCols = cols;
     gridRows = rows;
     const syncSize = (el) => {
@@ -1103,6 +1572,7 @@ function buildCanvas(cols, rows) {
 }
 
 function buildVideoCanvas(width, height, preserveDimensions = false) {
+    if (!canvas) return;
     canvasVideoMode = true;
     pixelMode = false;
     gridCols = 0;
@@ -1123,7 +1593,7 @@ function buildVideoCanvas(width, height, preserveDimensions = false) {
 }
 
 function layoutVideoCanvas() {
-    if (!canvasVideoMode || !canvas.width || !canvas.height || !playerContainer) return;
+    if (!canvas || !canvasVideoMode || !canvas.width || !canvas.height || !playerContainer) return;
     const cw = playerContainer.clientWidth || window.innerWidth;
     const ch = playerContainer.clientHeight || window.innerHeight;
     const scale = Math.min(cw / canvas.width, ch / canvas.height);
@@ -1294,7 +1764,7 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
     const parsedDur = parseDurationSeconds(durationSeconds);
     if (parsedDur > 0) mediaDurationSec = parsedDur;
     mediaIsLive = Boolean(isLive);
-    seekBaseSeconds = Number(startSec) || 0;
+    seekBaseSeconds = Math.max(0, Number(startSec) || 0);
     lastKnownPosition = seekBaseSeconds;
     isPlaybackPaused = false;
 
@@ -1346,7 +1816,6 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
             return;
         }
 
-        // Optionaler Fallback: Dauer aus HTTP-Header lesen, falls vom Server gesetzt
         const headerDur = parseDurationSeconds(
             response.headers.get('X-Media-Duration') || response.headers.get('X-Content-Duration')
         );
@@ -1418,13 +1887,14 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
                             appState = 'playing';
                             stopLoadingCreep();
                             setLoadingProgress(100, 'Wiedergabe läuft', '100%');
-                            setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
+                            setStatus(`PLAYING · ${currentPreset.toUpperCase()} · WEBCODECS`, 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
 
                             hideIdleOverlay();
 
                             canvas.style.display = 'block';
                             updatePlaybackControlsUI(seekBaseSeconds);
+                            recordWatchProgress(seekBaseSeconds, mediaDurationSec);
                             startWebCodecsDrawLoop(state);
                             wakeUpUiChrome();
                         }
@@ -1525,6 +1995,10 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
         mediaDurationSec = urlDuration;
     }
 
+    const targetResumeSec = Math.max(0, Number(resumeAtSec) || 0);
+    seekBaseSeconds = targetResumeSec;
+    lastKnownPosition = targetResumeSec;
+
     const query = (queryInput && queryInput.value) ? queryInput.value.trim() : '';
     if (!selection && !query) {
         if (queryInput) queryInput.focus();
@@ -1534,11 +2008,13 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     clearRecoveryTimers();
     if (!isRecovery) {
         mediaRetryCount = 0;
-        lastKnownPosition = Number(resumeAtSec) || 0;
         loadingProgressVal = 0;
         initialPlaybackShown = false;
         showIdleOverlay();
-        startLoadingCreep(8, 50, 'Video wird geladen...', 'Stream-Quelle wird aufgelöst...');
+        const startHint = targetResumeSec > 0
+            ? `Stream wird ab ${formatPlaybackTime(targetResumeSec)} vorbereitet...`
+            : 'Stream-Quelle wird aufgelöst...';
+        startLoadingCreep(8, 50, 'Video wird geladen...', startHint);
     }
 
     stopCustomWebAudio();
@@ -1557,7 +2033,12 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     appState      = 'resolving';
     currentPreset = selectedPreset;
     setUiState('resolving');
-    setStatus(isRecovery ? `SWITCHING / SYNC (${currentPreset.toUpperCase()})…` : 'RESOLVING…', 'resolving');
+    setStatus(
+        isRecovery
+            ? `SWITCHING (${currentPreset.toUpperCase()} @ ${formatPlaybackTime(targetResumeSec)})…`
+            : 'RESOLVING…',
+        'resolving'
+    );
     if (statusTitle && !isRecovery) statusTitle.textContent = selection ? 'CYBER.play' : query;
     if (statusLive && !isRecovery) statusLive.classList.add('hidden');
     if (statusFps && !isRecovery) statusFps.textContent = '';
@@ -1600,6 +2081,24 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     setUiState('playing');
     updateTitle(data.title, data.is_live);
 
+    // Verlauf-Metadaten aktualisieren
+    let storedMeta = null;
+    try {
+        const rawMeta = localStorage.getItem(CURRENT_META_KEY);
+        storedMeta = rawMeta ? JSON.parse(rawMeta) : null;
+    } catch (_) {}
+
+    currentWatchMeta = {
+        video_id: data.video_id || (storedMeta && storedMeta.video_id) || '',
+        selection: selection || data.selection || (storedMeta && storedMeta.selection) || '',
+        title: data.title || (storedMeta && storedMeta.title) || 'YouTube Video',
+        channel: (storedMeta && storedMeta.channel) || '',
+        channel_id: (storedMeta && storedMeta.channel_id) || '',
+        thumbnail: data.thumbnail || (data.video_id ? `https://i.ytimg.com/vi/${data.video_id}/hqdefault.jpg` : ((storedMeta && storedMeta.thumbnail) || '')),
+        duration: mediaDurationSec,
+    };
+    recordWatchProgress(targetResumeSec, mediaDurationSec);
+
     if (selectedDisplayMode === 'canvas') {
         void startNativeCanvasMedia(
             sessionId,
@@ -1607,16 +2106,17 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
             data.canvas_height,
             mediaDurationSec,
             mediaIsLive,
-            Number(resumeAtSec) || 0,
+            targetResumeSec,
             isRecovery
         );
     } else {
-        connectWs(sessionId);
+        connectWs(sessionId, targetResumeSec);
     }
     startPoll();
 }
 
 async function doStop() {
+    recordWatchProgress(getCurrentPlaybackSecond(), mediaDurationSec);
     clearRecoveryTimers();
     stopLoadingCreep();
     mediaRetryCount = 0;
@@ -1725,8 +2225,10 @@ function finishPlayback() {
 function clearCanvas() {
     stopNativeCanvasSource();
     canvasVideoMode = false;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.style.display      = 'none';
+    if (canvas && ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        canvas.style.display = 'none';
+    }
     if (asciiPlayer) {
         asciiPlayer.textContent   = '';
         asciiPlayer.style.display = 'none';
@@ -1837,7 +2339,7 @@ function renderFrame(now) {
     }
 }
 
-function connectWs(sid) {
+function connectWs(sid, startSec = 0) {
     clearFrameBuffer();
     canvasVideoMode = false;
     lastCanvasFrameIndex = -1;
@@ -1850,6 +2352,7 @@ function connectWs(sid) {
     clockAnchored     = false;
     lastPaintTime     = 0;
     maxPaintInterval  = 0;
+    seekBaseSeconds   = Math.max(0, Number(startSec) || 0);
     if (playbackControls) playbackControls.classList.add('hidden');
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1888,7 +2391,7 @@ function connectWs(sid) {
                 if (presetHint) presetHint.classList.add('hidden');
                 hideIdleOverlay();
 
-                void startHiddenWebAudio(sid, 0);
+                void startHiddenWebAudio(sid, seekBaseSeconds);
                 readyToRender = true;
                 lastFpsUpdate = performance.now();
                 fpsWindowStart = lastFpsUpdate;
@@ -1919,89 +2422,4 @@ function connectWs(sid) {
             return;
         }
         wsRetryCount++;
-        if (wsRetryCount > WS_MAX_RETRIES) {
-            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
-            finishPlayback();
-            return;
-        }
-        const delay = wsRetryCount * 1000;
-        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
-        wsRetryTimer = setTimeout(() => {
-            wsRetryTimer = null;
-            if (appState === 'playing' && sessionId === sid) connectWs(sid);
-        }, delay);
-    };
-
-    ws.onerror = () => {};
-}
-
-const flushSelectionLayer = () => {
-    if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
-    if (asciiPlayer) asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
-};
-if (asciiPlayer) asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
-document.addEventListener('copy', flushSelectionLayer);
-
-if (btnPlay) btnPlay.addEventListener('click', () => { void doPlay(0); });
-if (btnStop) btnStop.addEventListener('click', doStop);
-
-window.addEventListener('resize', () => {
-    if (canvasVideoMode && (appState === 'playing' || appState === 'resolving')) layoutVideoCanvas();
-    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
-});
-
-canvas.addEventListener('click', () => {
-    if (document.body.classList.contains('ui-idle')) {
-        wakeUpUiChrome();
-        return;
-    }
-    if (appState === 'error' && canvasVideoMode) {
-        mediaRetryCount = 0;
-        appState = 'playing';
-        void doPlay(getCurrentPlaybackSecond(), null, true);
-        return;
-    }
-    if (appState === 'playing' && canvasVideoMode) {
-        if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
-            audioContext.resume().catch(() => {});
-            if (statusPerf) statusPerf.classList.add('hidden');
-            wakeUpUiChrome();
-            return;
-        }
-        void toggleCustomPause();
-    }
-});
-
-window.addEventListener('online', () => {
-    if ((appState === 'playing' || appState === 'error') && canvasVideoMode) {
-        mediaRetryCount = 0;
-        if (mediaRetryTimer !== null) {
-            clearTimeout(mediaRetryTimer);
-            mediaRetryTimer = null;
-        }
-        appState = 'playing';
-        scheduleMediaRecovery('Netzwerk wieder da', false);
-    }
-});
-
-// Split-page mode: /watch startet automatisch das ausgewählte Video
-if (location.pathname === '/watch') {
-    document.body.classList.add('watch-page');
-    const params = new URLSearchParams(location.search);
-    const selection = params.get('selection');
-    if (btnPlay) btnPlay.classList.add('hidden');
-
-    const qs = document.getElementById('btn-search');
-    if (qs) qs.classList.add('hidden');
-    if (queryInput) { queryInput.value = ''; queryInput.classList.add('hidden'); }
-
-    if (btnStop) {
-        btnStop.classList.remove('hidden');
-        btnStop.addEventListener('click', () => { location.href = '/'; });
-    }
-    if (selection) {
-        window.setTimeout(() => { void doPlay(0, selection); }, 50);
-    } else {
-        setLoadingProgress(0, 'Keine Auswahl', 'Bitte kehre zur Mediathek zurück und wähle ein Video.');
-    }
-}
+        if (wsRetryCount > WS_MAX_
