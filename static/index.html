@@ -1,6 +1,174 @@
 <!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#070910"><title>ASCILINE — Search</title><link rel="stylesheet" href="/static/search.css?v=2"></head>
-<body><div class="ambient"></div><main class="shell"><header class="brandbar"><a class="brand" href="/" aria-label="ASCILINE Startseite"><span class="brand-mark">CP</span><span>CYBER.play</span></a><span class="eyebrow">YOUTUBE</span></header>
-<section class="hero"><div class="overline"><span class="pulse"></span> PREMIUM</div><h1>Find your<br><em>next signal.</em></h1><p class="intro">Durchsuche Videos und Kanäle.</p>
-<form id="search-form" class="search-form"><span class="search-icon">⌕</span><input id="search-query" type="search" autocomplete="off" placeholder="Video, Musik oder Kanal suchen …" aria-label="YouTube durchsuchen" required maxlength="200" onfocus="if(this.value){this.value='';}"><button id="search-button" type="submit">SUCHEN <span>↗</span></button></form><div class="hint">YOUTUBE SEARCH <span>·</span> NO ADS <span>·</span> TESLA</div></section>
-<section class="results-section"><div class="results-heading"><div><span class="section-index">Ergebnisse</span><h2 id="results-title">Entdecken</h2></div><div id="results-count" class="count">BEREIT</div></div><div id="search-message" class="message" role="status" aria-live="polite">Gib oben einen Suchbegriff ein, um Ergebnisse zu laden.</div><div id="search-results" class="results-grid"></div></section><footer><span>ASCILINE <b>●</b> SEARCH</span><span>PLAYBACK OPENS IN A SEPARATE VIEW</span></footer></main><script src="/static/search.js?v=2" defer></script></body></html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f4f6fb">
+  <title>CYBER.play — YouTube Media Hub</title>
+  <link rel="stylesheet" href="/static/style.css?v=yt-hub-2026-1">
+</head>
+<body class="hub-page">
+  <!-- Ambient Background Pastels -->
+  <div class="ambient-bg" aria-hidden="true">
+    <div class="ambient-blob blob-1"></div>
+    <div class="ambient-blob blob-2"></div>
+    <div class="ambient-blob blob-3"></div>
+  </div>
+
+  <!-- YouTube-Style Topbar -->
+  <header class="yt-header">
+    <div class="yt-header-left">
+      <button id="btn-toggle-sidebar" class="icon-btn" type="button" aria-label="Menü umschalten" title="Navigation">
+        ☰
+      </button>
+      <a href="/" class="yt-brand" id="brand-home-link">
+        <span class="yt-brand-icon">▶</span>
+        <span class="yt-brand-text">CYBER<span>.play</span></span>
+      </a>
+    </div>
+
+    <form id="search-form" class="yt-search-bar" role="search">
+      <div class="yt-search-input-wrap">
+        <span class="search-icon">🔍</span>
+        <input
+          id="search-query"
+          type="text"
+          placeholder="Auf YouTube suchen (Videos, Musik, Kanäle…)"
+          autocomplete="off"
+          aria-label="Auf YouTube suchen"
+        >
+        <button id="btn-clear-query" class="clear-btn hidden" type="button" aria-label="Eingabe löschen">✕</button>
+      </div>
+      <button id="search-button" class="yt-search-submit" type="submit">Suchen</button>
+    </form>
+
+    <div class="yt-header-right">
+      <div class="search-type-Segment" role="tablist" aria-label="Suchfilter">
+        <button id="tab-videos" class="seg-btn active" type="button">Videos</button>
+        <button id="tab-channels" class="seg-btn" type="button">Kanäle</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main YouTube Layout (Sidebar + Feed) -->
+  <div class="yt-layout">
+    <!-- Left Navigation Sidebar -->
+    <aside id="yt-sidebar" class="yt-sidebar" aria-label="Hauptnavigation">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-nav="home" type="button">
+          <span class="nav-icon">🏠</span>
+          <span class="nav-label">Startseite</span>
+        </button>
+        <button class="nav-item" data-nav="history" type="button">
+          <span class="nav-icon">🕒</span>
+          <span class="nav-label">Verlauf</span>
+          <span id="badge-history-count" class="nav-badge hidden">0</span>
+        </button>
+        <button class="nav-item" data-nav="saved" type="button">
+          <span class="nav-icon">⏱️</span>
+          <span class="nav-label">Später ansehen</span>
+          <span id="badge-saved-count" class="nav-badge hidden">0</span>
+        </button>
+        <button class="nav-item" data-nav="channels" type="button">
+          <span class="nav-icon">📺</span>
+          <span class="nav-label">Kanäle entdecken</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-divider"></div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">BELIEBTE THEMEN</div>
+        <button class="nav-subitem" data-quick-topic="Tesla & Elektromobilität Deutsch" type="button">⚡ Tesla & E-Autos</button>
+        <button class="nav-subitem" data-quick-topic="Nachrichten Live Deutsch" type="button">📰 Live-Nachrichten</button>
+        <button class="nav-subitem" data-quick-topic="LoFi Chill Music Mix" type="button">🎧 Musik & Beats</button>
+        <button class="nav-subitem" data-quick-topic="Dokumentation HD Deutsch" type="button">🌍 Dokumentationen</button>
+        <button class="nav-subitem" data-quick-topic="Technik & KI News Deutsch" type="button">🤖 Technik & KI</button>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="stealth-pill">
+          <span class="stealth-dot"></span>
+          WebCodecs Stealth aktiv
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="yt-main">
+      <!-- Category Chips Bar (wie bei YouTube) -->
+      <div id="category-bar" class="yt-category-bar" role="region" aria-label="Kategorien">
+        <button class="chip active" data-category-query="Aktuelle Trends & Highlights Deutsch" type="button">🔥 Alle & Trends</button>
+        <button class="chip" data-category-query="Tesla News & Tests Deutsch" type="button">🚗 Tesla & Autos</button>
+        <button class="chip" data-category-query="Musik Hits & Chill Mix" type="button">🎵 Musik</button>
+        <button class="chip" data-category-query="Nachrichten aktuell Deutsch" type="button">📰 Nachrichten</button>
+        <button class="chip" data-category-query="Technik Smartphone KI Test" type="button">💻 Technik & KI</button>
+        <button class="chip" data-category-query="Dokumentation Reportage Deutsch" type="button">🌍 Dokus</button>
+        <button class="chip" data-category-query="Gaming Highlights Deutsch" type="button">🎮 Gaming</button>
+        <button class="chip" data-category-query="Comedy & Unterhaltung Deutsch" type="button">😂 Unterhaltung</button>
+        <button class="chip" data-category-query="Wissenschaft & Weltraum Doku" type="button">🚀 Wissenschaft</button>
+        <button class="chip" data-category-query="Podcast Deutsch Video" type="button">🎙️ Podcasts</button>
+      </div>
+
+      <!-- Active Channel Header Banner -->
+      <section id="channel-banner" class="channel-banner hidden">
+        <div class="channel-banner-main">
+          <img id="channel-banner-avatar" class="channel-banner-avatar hidden" alt="">
+          <div class="channel-banner-info">
+            <div class="channel-banner-kicker">YOUTUBE KANAL</div>
+            <h2 id="channel-banner-title">Kanalname</h2>
+            <p id="channel-banner-desc">Alle öffentlichen Uploads dieses Kanals</p>
+          </div>
+        </div>
+        <button id="btn-close-channel" class="pill-action-btn" type="button">← Zurück zur Übersicht</button>
+      </section>
+
+      <!-- Continue Watching Shelf (Weiterschauen - erscheint automatisch auf der Startseite) -->
+      <section id="continue-watching-section" class="yt-shelf hidden">
+        <div class="shelf-header">
+          <div>
+            <h2 class="shelf-title">🕒 Weiterschauen</h2>
+            <p class="shelf-subtitle">Setze deine letzten Videos genau dort fort, wo du aufgehört hast</p>
+          </div>
+          <div class="shelf-actions">
+            <button id="btn-open-full-history" class="text-btn" type="button">Kompletter Verlauf →</button>
+          </div>
+        </div>
+        <div id="continue-watching-grid" class="yt-continue-grid"></div>
+      </section>
+
+      <!-- Main Feed Section -->
+      <section class="yt-feed-section">
+        <div class="feed-header">
+          <div class="feed-title-group">
+            <h1 id="results-title" class="feed-title">Empfohlene Videos</h1>
+            <span id="results-count" class="feed-badge">BEREIT</span>
+          </div>
+          <div id="history-actions" class="feed-actions hidden">
+            <button id="btn-clear-history" class="danger-pill-btn" type="button">🗑️ Verlauf leeren</button>
+          </div>
+        </div>
+
+        <div id="search-message" class="message">Wähle eine Kategorie oder gib einen Suchbegriff ein.</div>
+        <div id="search-results" class="yt-video-grid"></div>
+
+        <!-- Infinite Scroll Sentinel -->
+        <div id="scroll-sentinel" class="scroll-sentinel">
+          <div id="scroll-loader" class="scroll-loader hidden">
+            <span class="spinner"></span> Weitere Videos werden geladen…
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Dummy-Elemente für app.js Kompatibilität auf der Startseite -->
+  <div class="hidden" aria-hidden="true">
+    <div id="player-container"><pre id="ascii-player"></pre><canvas id="ascii-canvas"></canvas></div>
+    <div id="idle-overlay"></div>
+    <span id="status-title"></span><span id="status-live"></span><span id="status-state"></span><span id="status-fps"></span><span id="status-perf-hint"></span>
+  </div>
+
+  <script src="/static/app.js?v=yt-hub-2026-1" defer></script>
+</body>
+</html>
