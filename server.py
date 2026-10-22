@@ -80,15 +80,7 @@ def _resolve_selection(token: str) -> str | None:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """Enforce the PIN cookie on every route.
-
-    - WebSocket upgrades: 403 here so the handshake fails cleanly; the
-      ws_video handler also re-checks and closes with code 4003.
-    - /api/* without cookie: 403 JSON.
-    - /audio without cookie: 403 plain (it's a streaming endpoint, not a page).
-    - Everything else without cookie: serve pin.html.
-    - /api/auth itself is exempt so the PIN can be submitted.
-    """
+    """Enforce the PIN cookie on every route."""
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -125,7 +117,6 @@ def check_ffmpeg() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # atexit + signal handlers so no orphan ffmpeg survives a crash.
     atexit.register(_atexit_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
@@ -157,7 +148,7 @@ async def api_search(q: str = "", pageToken: str = ""):
     param_dict = {
         "part": "snippet", 
         "type": "video", 
-        "maxResults": 15,  # Anzahl der Treffer pro Nachlade-Paket (z.B. 15)
+        "maxResults": 15,  
         "q": query, 
         "regionCode": "DE", 
         "relevanceLanguage": "de", 
@@ -194,7 +185,7 @@ async def api_search(q: str = "", pageToken: str = ""):
         
         return {
             "results": results,
-            "nextPageToken": data.get("nextPageToken", "") # Token für die nächste Seite mitliefern
+            "nextPageToken": data.get("nextPageToken", "")
         }
     except HTTPError as exc:
         try:
@@ -220,54 +211,6 @@ async def watch_page():
     return FileResponse(os.path.join(STATIC_DIR, "watch.html"))
 
 
-@app.get("/audio")
-async def audio_stream(request: Request):
-    session_id = request.query_params.get("session")
-    if not session_id:
-        return Response(status_code=400, content="missing session id")
-    session = get_manager().get(session_id)
-    if session is None:
-        return Response(status_code=404, content="unknown or stale session id")
-    audio_pipeline = session.audio_pipeline
-    if audio_pipeline is None:
-        return Response(status_code=503, content="audio pipeline not ready")
-
-    # Als application/octet-stream getarnt, um Browser-Media-Sperren zu umgehen
-    return StreamingResponse(
-        audio_pipeline.chunks(),
-        media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
-
-
-def _native_mp4_command(session: Session) -> list[str]:
-    """Create a video-only fragmented MP4 stream for Canvas/WebCodecs.
-
-    Video is stream-copied without re-encoding. Audio is delivered by the
-    separate AudioPipeline endpoint, so including an audio track here only
-    adds muxing work and can produce unnecessary MP4 codec warnings.
-    """
-    media = session.media
-    if media is None:
-        raise ValueError("media is not ready")
-
-    return [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
-        "-thread_queue_size", "512",
-        *_ffmpeg_input_header_args(media.video_headers),
-        "-i", media.video_url,
-        "-map", "0:v:0", "-an",
-        "-c:v", "copy",
-        "-sn", "-dn",
-        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
-        "-flush_packets", "1",
-        "-f", "mp4", "pipe:1",
-    ]
-
-
 async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str) -> None:
     """Drain stderr so FFmpeg cannot block; never log signed stream URLs."""
     if proc.stderr is None:
@@ -279,24 +222,25 @@ async def _drain_native_ffmpeg_stderr(proc: asyncio.subprocess.Process, sid: str
                 break
             message = line.decode("utf-8", errors="replace").strip()
             if message:
-                log.warning("native Canvas ffmpeg session=%s: %s", sid, message[:600])
+                log.debug("native stream session=%s: %s", sid, message[:300])
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        log.debug("native Canvas stderr reader ended for session=%s: %s", sid, exc)
+        log.debug("native stderr reader ended for session=%s: %s", sid, exc)
 
 
-async def _native_mp4_body(
+async def _native_stream_body(
     proc: asyncio.subprocess.Process,
     session: Session,
     stderr_task: asyncio.Task,
+    chunk_size: int = 64 * 1024
 ):
-    """Stream fragmented MP4 chunks and tear FFmpeg down on disconnect/stop."""
+    """Stream generic stdout chunks and tear FFmpeg down on disconnect/stop."""
     try:
         if proc.stdout is None:
             return
         while not session.cancel_event.is_set():
-            chunk = await proc.stdout.read(64 * 1024)
+            chunk = await proc.stdout.read(chunk_size)
             if not chunk:
                 break
             yield chunk
@@ -327,10 +271,94 @@ async def _native_mp4_body(
             pass
 
 
+@app.get("/audio")
+async def audio_stream(request: Request):
+    """Dynamically spawn an FFmpeg process for Audio (MP3) to allow seeking."""
+    session_id = request.query_params.get("session")
+    try:
+        start_sec = float(request.query_params.get("start", 0.0))
+    except ValueError:
+        start_sec = 0.0
+
+    if not session_id:
+        return Response(status_code=400, content="missing session id")
+    session = get_manager().get(session_id)
+    if session is None or session.media is None:
+        return Response(status_code=404, content="unknown or stale session id")
+
+    media = session.media
+    url = media.audio_url or media.video_url
+    headers = media.audio_headers if media.audio_url else media.video_headers
+
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
+        "-fflags", "nobuffer", "-flags", "low_delay",
+        "-thread_queue_size", "512",
+        *_ffmpeg_input_header_args(headers),
+        *(["-ss", f"{start_sec:.3f}"] if start_sec > 0 else []),
+        "-i", url,
+        "-vn",
+        "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100", "-ac", "2",
+        "-flush_packets", "1",
+        "-f", "mp3", "pipe:1"
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception:
+        log.exception("could not start native audio FFmpeg process")
+        return Response(status_code=502, content="could not start audio stream")
+
+    stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id + "_audio"))
+    
+    resp_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if session.media.duration:
+        resp_headers["X-Media-Duration"] = str(session.media.duration)
+
+    return StreamingResponse(
+        _native_stream_body(proc, session, stderr_task, chunk_size=24 * 1024),
+        media_type="application/octet-stream",
+        headers=resp_headers,
+    )
+
+
+def _native_mp4_command(session: Session, start_sec: float = 0.0) -> list[str]:
+    media = session.media
+    if media is None:
+        raise ValueError("media is not ready")
+
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "warning", "-nostdin",
+        "-thread_queue_size", "512",
+        *_ffmpeg_input_header_args(media.video_headers),
+        *(["-ss", f"{start_sec:.3f}"] if start_sec > 0 else []),
+        "-i", media.video_url,
+        "-map", "0:v:0", "-an",
+        "-c:v", "copy",
+        "-sn", "-dn",
+        "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+        "-flush_packets", "1",
+        "-f", "mp4", "pipe:1",
+    ]
+
+
 @app.get("/media")
 async def native_canvas_media(request: Request):
     """Browser-native stream endpoint used only by Canvas mode."""
     session_id = request.query_params.get("session")
+    try:
+        start_sec = float(request.query_params.get("start", 0.0))
+    except ValueError:
+        start_sec = 0.0
+
     if not session_id:
         return Response(status_code=400, content="missing session id")
     session = get_manager().get(session_id)
@@ -340,7 +368,7 @@ async def native_canvas_media(request: Request):
         return Response(status_code=409, content="native media is only available in Canvas mode")
 
     try:
-        command = _native_mp4_command(session)
+        command = _native_mp4_command(session, start_sec)
         proc = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -352,20 +380,23 @@ async def native_canvas_media(request: Request):
 
     stderr_task = asyncio.create_task(_drain_native_ffmpeg_stderr(proc, session_id))
     log.info(
-        "native Canvas stream opened session=%s format=%s separate_audio_url=%s",
-        session_id, session.media.format_note, bool(session.media.audio_url),
+        "native Canvas stream opened session=%s start=%.2fs format=%s",
+        session_id, start_sec, session.media.format_note,
     )
     
-    # media_type ebenfalls auf application/octet-stream gesetzt
+    resp_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "Accept-Ranges": "none",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if session.media.duration:
+        resp_headers["X-Media-Duration"] = str(session.media.duration)
+
     return StreamingResponse(
-        _native_mp4_body(proc, session, stderr_task),
+        _native_stream_body(proc, session, stderr_task),
         media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-            "Accept-Ranges": "none",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=resp_headers,
     )
 
 
@@ -395,9 +426,6 @@ async def api_auth(req: AuthRequest, request: Request):
     auth.record_success(ip)
     cookie_value = auth.make_cookie_value()
     response = JSONResponse(content={"ok": True})
-    # Mark Secure only when this request itself came in over https; over
-    # plain http the browser would refuse to send a Secure cookie back on
-    # the /audio GET.
     is_https = (
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto", "").lower() == "https"
@@ -436,6 +464,7 @@ async def api_play(req: PlayRequest):
             "session_id": session.session_id,
             "title": session.media.title,
             "is_live": session.media.is_live,
+            "duration": session.media.duration,
             "cols": preset_cfg["cols"],
             "rows": preset_cfg["rows"],
             "fps": preset_cfg["fps_cap"],
@@ -445,7 +474,6 @@ async def api_play(req: PlayRequest):
             "canvas_height": (CANVAS_PRESETS.get(preset_name) or CANVAS_PRESETS[DEFAULT_PRESET])["height"],
         }
 
-    # Superseded during resolve (rare race — another Play beat us).
     return JSONResponse(
         status_code=409,
         content={"error": "session superseded by a newer play request"},
@@ -464,7 +492,6 @@ async def api_status():
 
 
 async def _run_video_ws(websocket: WebSocket, session: Session) -> None:
-    """Stream ASCII-protocol or JPEG Canvas frames for an already-playing session."""
     preset_name = session.preset_name if session.preset_name in PRESETS else DEFAULT_PRESET
     preset_cfg = PRESETS[preset_name]
     preset = PresetSpec(
