@@ -1,4 +1,3 @@
-
 """Resolve a YouTube URL, video ID, or search query to stream URLs."""
 
 from __future__ import annotations
@@ -45,9 +44,6 @@ class ResolvedMedia:
 
 def _prepare_js_runtime() -> Optional[str]:
     """Expose the Deno runtime installed by render-build.sh to yt-dlp."""
-    # Render build and runtime environments do not always expose the same
-    # HOME/PATH. Prefer a project-local Deno install created by render-build.sh,
-    # then check the configured and conventional user install locations.
     project_deno = Path(__file__).resolve().parent / ".deno" / "bin" / "deno"
     deno_install = Path(os.environ.get("DENO_INSTALL", str(Path.home() / ".deno")))
     candidates = [
@@ -77,19 +73,8 @@ def _ydl_opts(
     deno_path: Optional[str] = None,
     prefer_native: bool = False,
 ) -> dict:
-    """Build yt-dlp options for ASCII or native browser video playback.
-
-    Native Canvas mode selects only H.264/AVC1 video within the requested
-    height. Every native fallback remains codec-constrained so AV1/VP9 cannot
-    be selected silently. Audio is delivered separately. ASCII mode retains
-    the existing separate video/audio selection.
-    """
+    """Build yt-dlp options for ASCII or native browser video playback."""
     if prefer_native:
-        # Canvas/WebCodecs works best with a broadly supported H.264/AVC video
-        # track. Keep every fallback constrained to AVC1 and the requested
-        # height; the previous generic MP4 fallbacks could silently select AV1.
-        # Audio is fetched independently by AudioPipeline, so it does not need
-        # to be AAC or muxed into the native Canvas video stream.
         fmt = (
             f"bestvideo[vcodec^=avc1][height<={max_height}]"
             f"+bestaudio"
@@ -115,9 +100,6 @@ def _ydl_opts(
         "socket_timeout": 30,
         "retries": 2,
         "extractor_retries": 2,
-        # Use the normal/current yt-dlp YouTube client selection instead of
-        # hard-coding tv/web_safari/android, which can yield no player data.
-        # The EJS scripts are included by the yt-dlp[default] extra.
     }
     if deno_path:
         opts["js_runtimes"] = {"deno": {"path": deno_path}}
@@ -132,9 +114,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
     try:
         deno_path = _prepare_js_runtime()
         if not deno_path:
-            # Do not log environment details or anything from the cookie value.
-            # Continue extraction so yt-dlp can still use a runtime supplied by PATH;
-            # the configured Render build script installs Deno for production.
             import logging
             logging.getLogger("resolver").warning(
                 "Deno runtime not found. YouTube extraction may fail; "
@@ -155,7 +134,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
             if not cookie_bytes:
                 raise ResolverError("The decoded YouTube cookie file is empty.")
 
-            # Create a temporary cookie file. Never log its contents.
             with tempfile.NamedTemporaryFile(
                 mode="wb", prefix="yt-cookies-", suffix=".txt", delete=False
             ) as cookie_file:
@@ -169,7 +147,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        # Search results are returned inside an entries list.
         if "entries" in info:
             entries = [
                 entry for entry in info["entries"]
@@ -183,8 +160,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
 
             info = entries[0]
 
-            # Resolve the actual video if the search result contains
-            # metadata only.
             if not info.get("url") or not info.get("formats"):
                 webpage_url = info.get("webpage_url")
 
@@ -214,7 +189,6 @@ def _extract(url: str, max_height: int, prefer_native: bool = False) -> dict:
         ) from exc
 
     finally:
-        # Delete temporary cookies even if extraction fails.
         if cookie_path:
             try:
                 os.remove(cookie_path)
@@ -277,7 +251,6 @@ def _pick_streams(
                 {},
             )
 
-    # A single selected format may already contain both video and audio.
     url = info.get("url")
     if not url:
         raise ResolverError(
@@ -286,12 +259,6 @@ def _pick_streams(
         )
 
     return url, None, _headers_for(info, info), {}
-
-
-def _pick_urls(info: dict) -> tuple[str, Optional[str]]:
-    """Compatibility helper returning only URLs."""
-    video_url, audio_url, _, _ = _pick_streams(info)
-    return video_url, audio_url
 
 
 def _build_format_note(info: dict) -> str:
@@ -388,10 +355,15 @@ def resolve(
 
     video_url, audio_url, video_headers, audio_headers = _pick_streams(info)
 
+    # Safe duration extraction for the progress bar
+    duration = info.get("duration")
+    if not duration and info.get("approx_duration_ms"):
+        duration = info.get("approx_duration_ms") / 1000.0
+
     return ResolvedMedia(
         title=info.get("title") or "Unknown",
         is_live=bool(info.get("is_live")),
-        duration=info.get("duration"),
+        duration=duration,
         video_url=video_url,
         audio_url=audio_url,
         video_id=info.get("id") or "",
