@@ -1,5 +1,6 @@
 // CYBER.play / ASCILINE YouTube streamer — Tesla browser frontend.
-// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Loading Progress %, Immersive Fullscreen, Auto-Recovery
+// Features: Instant Quality/Mode Switch, Floating Auto-Hide Controls, Loading Progress %,
+//           Immersive Fullscreen, Auto-Recovery, MP3 Frame-Sync & Gapless WebAudio
 
 'use strict';
 
@@ -88,6 +89,7 @@ let uiIdleTimer       = null;
 // Loading Progress State (0% - 100%)
 let loadingProgressVal   = 0;
 let loadingCreepTimer    = null;
+let initialPlaybackShown = false;
 
 // Auto-Recovery State
 const MEDIA_MAX_RETRIES = 12;
@@ -135,6 +137,24 @@ let lastPaintTime     = 0;
 let maxPaintInterval  = 0;
 
 // ───────── Ladebildschirm mit Fortschrittsbalken & Prozentanzeige ─────────
+function showIdleOverlay() {
+    if (!idleOverlay) return;
+    idleOverlay.classList.remove('hidden');
+    idleOverlay.style.removeProperty('display');
+    idleOverlay.style.opacity = '1';
+}
+
+function hideIdleOverlay() {
+    if (!idleOverlay) return;
+    idleOverlay.classList.add('hidden');
+    idleOverlay.style.setProperty('display', 'none', 'important');
+}
+
+function isIdleOverlayHidden() {
+    if (!idleOverlay) return true;
+    return idleOverlay.classList.contains('hidden') || idleOverlay.style.display === 'none';
+}
+
 function stopLoadingCreep() {
     if (loadingCreepTimer !== null) {
         clearInterval(loadingCreepTimer);
@@ -167,13 +187,18 @@ function startLoadingCreep(startPct, maxPct, headlineText, detailText) {
 
 // ───────── Vollbild Auto-Hide Steuerung (blendet UI nach 3.2s aus) ─────────
 function wakeUpUiChrome() {
+    // Weckt den AudioContext bei jeder Berührung sofort auf, falls Autoplay ihn pausiert hat
+    if (audioContext && audioContext.state === 'suspended' && appState === 'playing' && !isPlaybackPaused) {
+        audioContext.resume().catch(() => {});
+    }
+
     document.body.classList.remove('ui-idle');
     if (uiIdleTimer !== null) {
         clearTimeout(uiIdleTimer);
         uiIdleTimer = null;
     }
     // Nur ausblenden, wenn aktiv abgespielt wird, nicht pausiert ist und der Benutzer nicht gerade spult
-    if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing && idleOverlay && idleOverlay.classList.contains('hidden')) {
+    if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing && isIdleOverlayHidden()) {
         uiIdleTimer = setTimeout(() => {
             if (appState === 'playing' && !isPlaybackPaused && !isUserScrubbing) {
                 document.body.classList.add('ui-idle');
@@ -657,7 +682,7 @@ displayModeBtns.forEach(btn => {
             clearRecoveryTimers();
             mediaRetryCount = 0;
             const resumeSec = getCurrentPlaybackSecond();
-            void doPlay(resumeSec, null, false);
+            void doPlay(resumeSec, null, true);
         }
     });
 });
@@ -691,7 +716,85 @@ function updateMuteBtn() {
     }
 }
 
-// ───────── Unsichtbares Web-Audio (Mit Auto-Reconnect) ─────────
+// ───────── Unsichtbares Web-Audio (MP3 Frame-Sync & Gapless Overlap) ─────────
+const MP3_BITRATES_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+const MP3_BITRATES_V2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
+const MP3_SAMPLERATES_V1 = [44100, 48000, 32000, 0];
+const MP3_SAMPLERATES_V2 = [22050, 24000, 16000, 0];
+const MP3_SAMPLERATES_V25 = [11025, 12000, 8000, 0];
+
+// Berechnet die exakte Byte-Länge eines MP3-Frames anhand seines 4-Byte-Headers (0 = kein gültiger Header)
+function getMp3FrameLength(buf, offset) {
+    if (offset + 4 > buf.length) return 0;
+    if (buf[offset] !== 0xFF || (buf[offset + 1] & 0xE0) !== 0xE0) return 0;
+
+    const versionBits = (buf[offset + 1] >> 3) & 0x03;
+    const layerBits   = (buf[offset + 1] >> 1) & 0x03;
+    if (versionBits === 1 || layerBits !== 1) return 0; // Nur Layer III (MP3)
+
+    const bitrateIdx = (buf[offset + 2] >> 4) & 0x0F;
+    const srIdx      = (buf[offset + 2] >> 2) & 0x03;
+    const padding    = (buf[offset + 2] >> 1) & 0x01;
+    if (bitrateIdx === 0 || bitrateIdx === 15 || srIdx === 3) return 0;
+
+    const isV1 = (versionBits === 3);
+    const bitrate = isV1 ? MP3_BITRATES_V1_L3[bitrateIdx] : MP3_BITRATES_V2_L3[bitrateIdx];
+    const sampleRate = isV1
+        ? MP3_SAMPLERATES_V1[srIdx]
+        : (versionBits === 2 ? MP3_SAMPLERATES_V2[srIdx] : MP3_SAMPLERATES_V25[srIdx]);
+    if (!bitrate || !sampleRate) return 0;
+
+    const coeff = isV1 ? 144 : 72;
+    return Math.floor((coeff * bitrate * 1000) / sampleRate) + padding;
+}
+
+// Extrahiert ausschließlich vollständige, saubere MP3-Frames aus dem Stream-Puffer
+function extractCleanMp3Frames(buffer, minFramesRequired) {
+    let startOffset = 0;
+
+    // Optionales ID3v2-Tag am Stream-Anfang überspringen
+    if (buffer.length >= 10 && buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) {
+        const id3Size = ((buffer[6] & 0x7f) << 21) | ((buffer[7] & 0x7f) << 14) | ((buffer[8] & 0x7f) << 7) | (buffer[9] & 0x7f);
+        startOffset = 10 + id3Size;
+        if (buffer.length <= startOffset) return null;
+    }
+
+    // Ersten echten Sync-Header suchen (validiert durch den Folge-Frame)
+    let firstSync = -1;
+    for (let i = startOffset; i + 8 < buffer.length; i++) {
+        const len1 = getMp3FrameLength(buffer, i);
+        if (len1 > 0 && i + len1 + 4 <= buffer.length) {
+            const len2 = getMp3FrameLength(buffer, i + len1);
+            if (len2 > 0) {
+                firstSync = i;
+                break;
+            }
+        }
+    }
+    if (firstSync === -1) return null;
+
+    // Alle komplett im Puffer liegenden MP3-Frames abzählen
+    const frames = [];
+    let cursor = firstSync;
+    while (cursor + 4 <= buffer.length) {
+        const fLen = getMp3FrameLength(buffer, cursor);
+        if (fLen <= 0 || cursor + fLen > buffer.length) break;
+        frames.push({ start: cursor, end: cursor + fLen });
+        cursor += fLen;
+    }
+
+    if (frames.length < minFramesRequired) return null;
+
+    const lastTwoStart = frames[Math.max(0, frames.length - 2)].start;
+    return {
+        cleanBytes: buffer.slice(firstSync, cursor),
+        frameCount: frames.length,
+        tailBytes: buffer.slice(lastTwoStart, cursor),
+        tailFrameCount: Math.min(2, frames.length),
+        leftover: buffer.slice(cursor),
+    };
+}
+
 function stopCustomWebAudio() {
     if (audioRetryTimer !== null) {
         clearTimeout(audioRetryTimer);
@@ -707,9 +810,7 @@ function stopCustomWebAudio() {
     activeAudioNodes = [];
     nextAudioTime = 0;
     firstAudioAnchorTime = null;
-    if (audioContext && audioContext.state !== 'closed') {
-        audioContext.suspend().catch(() => {});
-    }
+    // WICHTIG: Kein audioContext.suspend() hier aufrufen! Das verhindert die Stummschaltungs-Race-Condition beim Start.
 }
 
 async function startHiddenWebAudio(sid, startSec = 0) {
@@ -718,7 +819,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
     if (!AudioCtx) return;
 
     if (!audioContext) {
-        audioContext = new AudioCtx();
+        audioContext = new AudioCtx({ latencyHint: 'playback' });
         audioGainNode = audioContext.createGain();
         audioGainNode.connect(audioContext.destination);
     }
@@ -734,27 +835,68 @@ async function startHiddenWebAudio(sid, startSec = 0) {
         if (!res.ok || !res.body) throw new Error(`Audio HTTP ${res.status}`);
         reader = res.body.getReader();
         customAudioReader = reader;
-        nextAudioTime = audioContext.currentTime + 0.12;
+        nextAudioTime = 0;
 
         let leftover = new Uint8Array(0);
-        const MIN_CHUNK_SIZE = 24 * 1024;
+        let prevTailBytes = null;
+        let prevTailFrames = 0;
+        let isFirstChunk = true;
 
-        while (customAudioReader === reader && appState === 'playing') {
+        while (customAudioReader === reader && (appState === 'playing' || appState === 'resolving')) {
+            // Backpressure: Wenn bereits über 8 Sekunden Ton im Voraus gepuffert sind, kurz warten
+            while (
+                customAudioReader === reader &&
+                appState === 'playing' &&
+                nextAudioTime > 0 &&
+                (nextAudioTime - audioContext.currentTime) > 8.0
+            ) {
+                await new Promise(r => setTimeout(r, 120));
+            }
+            if (customAudioReader !== reader || (appState !== 'playing' && appState !== 'resolving')) break;
+
             const { value, done } = await reader.read();
             if (done) break;
 
             const merged = new Uint8Array(leftover.length + value.length);
             merged.set(leftover, 0);
             merged.set(value, leftover.length);
+            leftover = merged;
 
-            if (merged.length < MIN_CHUNK_SIZE) {
-                leftover = merged;
-                continue;
+            // 1. Paket schnell starten (ab 35 Frames ≈ 0.9s), danach größere Pakete (90 Frames ≈ 2.3s) für glasklaren Ton
+            const minFrames = isFirstChunk ? 35 : 90;
+            const extracted = extractCleanMp3Frames(leftover, minFrames);
+            if (!extracted) continue;
+
+            leftover = extracted.leftover;
+            isFirstChunk = false;
+
+            // Letzte 2 Frames des Vorgänger-Pakets voranstellen (hält das MP3-Bit-Reservoir intakt und verhindert Knackser)
+            let decodeBytes = extracted.cleanBytes;
+            let overlapFrames = 0;
+            if (prevTailBytes && prevTailFrames > 0) {
+                decodeBytes = new Uint8Array(prevTailBytes.length + extracted.cleanBytes.length);
+                decodeBytes.set(prevTailBytes, 0);
+                decodeBytes.set(extracted.cleanBytes, prevTailBytes.length);
+                overlapFrames = prevTailFrames;
             }
-            leftover = new Uint8Array(0);
+            prevTailBytes = extracted.tailBytes;
+            prevTailFrames = extracted.tailFrameCount;
 
-            audioContext.decodeAudioData(merged.buffer.slice(0)).then(audioBuffer => {
-                if (customAudioReader !== reader || appState !== 'playing') return;
+            try {
+                if (audioContext.state === 'suspended' && !isPlaybackPaused) {
+                    await audioContext.resume().catch(() => {});
+                }
+
+                // Sequenzielles Await verhindert, dass sich Audio-Pakete überholen!
+                const audioBuffer = await audioContext.decodeAudioData(decodeBytes.buffer.slice(0));
+                if (customAudioReader !== reader || (appState !== 'playing' && appState !== 'resolving')) break;
+
+                const totalFrames = overlapFrames + extracted.frameCount;
+                const skipOffsetSec = overlapFrames > 0
+                    ? (audioBuffer.duration * (overlapFrames / totalFrames))
+                    : 0;
+                const playDurationSec = Math.max(0.01, audioBuffer.duration - skipOffsetSec);
+
                 const src = audioContext.createBufferSource();
                 src.buffer = audioBuffer;
                 src.connect(audioGainNode);
@@ -764,17 +906,25 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                     if (idx !== -1) activeAudioNodes.splice(idx, 1);
                 };
 
-                if (nextAudioTime < audioContext.currentTime) {
-                    nextAudioTime = audioContext.currentTime + 0.04;
+                const nowAudio = audioContext.currentTime;
+                if (nextAudioTime < nowAudio + 0.02) {
+                    nextAudioTime = nowAudio + (firstAudioAnchorTime === null ? 0.14 : 0.03);
                 }
                 if (firstAudioAnchorTime === null) {
-                    firstAudioAnchorTime = nextAudioTime;
+                    const relativeAudioStart = Math.max(0, startSec - (seekBaseSeconds || 0));
+                    firstAudioAnchorTime = nextAudioTime - relativeAudioStart;
                 }
-                src.start(nextAudioTime);
-                nextAudioTime += audioBuffer.duration;
-            }).catch(() => {});
+
+                src.start(nextAudioTime, skipOffsetSec, playDurationSec);
+                nextAudioTime += playDurationSec;
+            } catch (decodeErr) {
+                console.warn('MP3-Chunk übersprungen:', decodeErr);
+                prevTailBytes = null;
+                prevTailFrames = 0;
+            }
         }
 
+        // Falls der Audio-Stream vorzeitig abreißt -> Automatisch ab der aktuellen Sekunde neu verbinden
         if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
             const curSec = getCurrentPlaybackSecond();
             if (mediaIsLive || !(mediaDurationSec > 0) || curSec < mediaDurationSec - 4) {
@@ -783,7 +933,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                     if (appState === 'playing' && sessionId === sid) {
                         void startHiddenWebAudio(sid, getCurrentPlaybackSecond());
                     }
-                }, 1500);
+                }, 1200);
             }
         }
     } catch (e) {
@@ -794,7 +944,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                 if (appState === 'playing' && sessionId === sid) {
                     void startHiddenWebAudio(sid, getCurrentPlaybackSecond());
                 }
-            }, 1500);
+            }, 1200);
         }
     }
 }
@@ -1089,11 +1239,9 @@ async function startNativeCanvasMedia(sid, fallbackWidth, fallbackHeight, durati
         decoderConfigured: false,
     };
     webCodecsState = state;
-webCodecsState = state;
-    if (!isRecovery) {
+    if (!isRecovery && !initialPlaybackShown) {
         setStatus('BUFFERING · WEBCODECS', 'resolving');
-        // Ladebildschirm nur beim initialen Start anzeigen, nicht bei Hintergrund-Resyncs
-        if (idleOverlay) idleOverlay.classList.remove('hidden');
+        showIdleOverlay();
         startLoadingCreep(55, 82, 'Videostream wird gepuffert...', 'Verbinde mit Media-Pipeline...');
         if (statusPerf) statusPerf.classList.add('hidden');
     }
@@ -1110,7 +1258,7 @@ webCodecsState = state;
             return;
         }
 
-        if (!isRecovery) {
+        if (!isRecovery && !initialPlaybackShown) {
             startLoadingCreep(75, 92, 'Stream empfangen...', 'Initialisiere WebCodecs Decoder...');
         }
 
@@ -1152,11 +1300,11 @@ webCodecsState = state;
                     return;
                 }
 
-                if (!isRecovery) {
+                if (!isRecovery && !initialPlaybackShown) {
                     setLoadingProgress(95, 'Decoder bereit...', 'Erster Frame wird berechnet...');
                 }
 
-state.decoder = new VideoDecoder({
+                state.decoder = new VideoDecoder({
                     output(frame) {
                         if (state.stopped || webCodecsState !== state) {
                             try { frame.close(); } catch (_) {}
@@ -1164,19 +1312,17 @@ state.decoder = new VideoDecoder({
                         }
                         state.frames.push(frame);
                         state.frames.sort((a, b) => a.timestamp - b.timestamp);
-            if (!state.started) {
+                        if (!state.started) {
                             state.started = true;
+                            initialPlaybackShown = true;
                             appState = 'playing';
                             stopLoadingCreep();
                             setLoadingProgress(100, 'Wiedergabe läuft', '100%');
                             setStatus('PLAYING · CANVAS / WEBCODECS', 'playing');
                             if (presetHint) presetHint.classList.add('hidden');
-                            
-                            // ── FIX: Hartes und sauberes Ausblenden via JavaScript & CSS ──
-                            if (idleOverlay) {
-                                idleOverlay.classList.add('hidden');
-                                idleOverlay.style.setProperty('display', 'none', 'important');
-                            }
+
+                            // Ladebildschirm dauerhaft ausblenden
+                            hideIdleOverlay();
 
                             canvas.style.display = 'block';
                             updatePlaybackControlsUI(seekBaseSeconds);
@@ -1186,7 +1332,9 @@ state.decoder = new VideoDecoder({
                     },
                     error(error) {
                         console.error('VideoDecoder error:', error);
-                        if (!state.stopped) scheduleMediaRecovery('Decoder-Fehler', false);
+                        if (!state.stopped && webCodecsState === state) {
+                            scheduleMediaRecovery('Decoder-Fehler', false);
+                        }
                     },
                 });
 
@@ -1284,7 +1432,8 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
         mediaRetryCount = 0;
         lastKnownPosition = Number(resumeAtSec) || 0;
         loadingProgressVal = 0;
-        if (idleOverlay) idleOverlay.classList.remove('hidden');
+        initialPlaybackShown = false;
+        showIdleOverlay();
         startLoadingCreep(8, 50, 'Video wird geladen...', 'Stream-Quelle wird aufgelöst...');
     }
 
@@ -1367,12 +1516,16 @@ async function doStop() {
     stopLoadingCreep();
     mediaRetryCount = 0;
     lastKnownPosition = 0;
+    initialPlaybackShown = false;
     stopCustomWebAudio();
     stopPoll();
     wsRetryCount = 0;
     if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
     try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
     closeWs();
+    if (audioContext && audioContext.state === 'running') {
+        audioContext.suspend().catch(() => {});
+    }
     finishPlayback();
     setStatus('IDLE', 'idle');
     if (statusTitle) statusTitle.textContent = '';
@@ -1429,9 +1582,9 @@ function setError(msg) {
     if (statusFps) statusFps.textContent = '';
     if (statusPerf) statusPerf.classList.add('hidden');
     setUiState('idle');
-    if (idleOverlay && (!webCodecsState || !webCodecsState.started)) {
+    if (!initialPlaybackShown) {
         setLoadingProgress(0, 'Fehler beim Laden', msg);
-        idleOverlay.classList.remove('hidden');
+        showIdleOverlay();
     }
 }
 
@@ -1445,15 +1598,16 @@ function finishPlayback() {
     stopLoadingCreep();
     stopCustomWebAudio();
     document.body.classList.remove('ui-idle');
-    appState          = 'idle';
-    readyToRender     = false;
-    isPlaybackPaused  = false;
-    seekBaseSeconds   = 0;
-    lastKnownPosition = 0;
+    appState             = 'idle';
+    readyToRender        = false;
+    isPlaybackPaused     = false;
+    seekBaseSeconds      = 0;
+    lastKnownPosition    = 0;
+    initialPlaybackShown = false;
     clearFrameBuffer();
     stopNativeCanvasSource();
     clearCanvas();
-    if (idleOverlay) idleOverlay.classList.remove('hidden');
+    showIdleOverlay();
     if (playbackControls) playbackControls.classList.add('hidden');
     setUiState('idle');
     if (statusFps) statusFps.textContent = '';
@@ -1597,7 +1751,9 @@ function connectWs(sid) {
 
     ws.onopen = () => {
         setStatus('BUFFERING · ASCII', 'resolving');
-        startLoadingCreep(60, 95, 'ASCII-Stream verbunden...', 'Warte auf ersten Frame...');
+        if (!initialPlaybackShown) {
+            startLoadingCreep(60, 95, 'ASCII-Stream verbunden...', 'Warte auf ersten Frame...');
+        }
     };
 
     ws.onmessage = (event) => {
@@ -1618,11 +1774,12 @@ function connectWs(sid) {
                     pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
                     buildCanvas(parseInt(p[3]), parseInt(p[4]));
                 }
+                initialPlaybackShown = true;
                 stopLoadingCreep();
                 setLoadingProgress(100, 'Wiedergabe läuft', '100%');
                 setStatus('PLAYING · ASCII', 'playing');
                 if (presetHint) presetHint.classList.add('hidden');
-                if (idleOverlay) idleOverlay.classList.add('hidden');
+                hideIdleOverlay();
 
                 void startHiddenWebAudio(sid, 0);
                 readyToRender = true;
