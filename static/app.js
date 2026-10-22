@@ -38,7 +38,6 @@ const btnToggleSidebar        = document.getElementById('btn-toggle-sidebar');
 const navItems                = document.querySelectorAll('.nav-item[data-nav]');
 const quickTopicBtns          = document.querySelectorAll('.nav-subitem[data-quick-topic]');
 const categoryChips           = document.querySelectorAll('.chip[data-category-query]');
-const categoryBar             = document.getElementById('category-bar');
 const continueWatchingSection = document.getElementById('continue-watching-section');
 const continueWatchingGrid    = document.getElementById('continue-watching-grid');
 const btnOpenFullHistory      = document.getElementById('btn-open-full-history');
@@ -251,7 +250,11 @@ function findHistoryEntry(item) {
     const key = getVideoKey(item);
     if (!key) return null;
     const history = getWatchHistory();
-    return history.find(h => (h.video_id && h.video_id === item.video_id) || (h.selection && h.selection === item.selection) || h.title === item.title) || null;
+    return history.find(h =>
+        (h.video_id && h.video_id === item.video_id) ||
+        (h.selection && h.selection === item.selection) ||
+        h.title === item.title
+    ) || null;
 }
 
 function isVideoSaved(item) {
@@ -269,21 +272,20 @@ function toggleSaveVideo(item) {
         list.splice(idx, 1);
         saveSavedVideosList(list);
         return false;
-    } else {
-        list.unshift({
-            video_id: item.video_id || '',
-            selection: item.selection || '',
-            title: item.title || 'Unbenanntes Video',
-            channel: item.channel || '',
-            channel_id: item.channel_id || '',
-            thumbnail: item.thumbnail || '',
-            duration: parseDurationSeconds(item.duration) || 0,
-            published_at: item.published_at || '',
-            saved_at: Date.now(),
-        });
-        saveSavedVideosList(list);
-        return true;
     }
+    list.unshift({
+        video_id: item.video_id || '',
+        selection: item.selection || '',
+        title: item.title || 'Unbenanntes Video',
+        channel: item.channel || '',
+        channel_id: item.channel_id || '',
+        thumbnail: item.thumbnail || '',
+        duration: parseDurationSeconds(item.duration) || 0,
+        published_at: item.published_at || '',
+        saved_at: Date.now(),
+    });
+    saveSavedVideosList(list);
+    return true;
 }
 
 function recordWatchProgress(positionSec, durationSec) {
@@ -298,15 +300,16 @@ function recordWatchProgress(positionSec, durationSec) {
         (currentWatchMeta.title && h.title === currentWatchMeta.title)
     );
 
+    const prev = existingIdx !== -1 ? list[existingIdx] : null;
     const entry = {
-        video_id: currentWatchMeta.video_id || (existingIdx !== -1 ? list[existingIdx].video_id : ''),
+        video_id: currentWatchMeta.video_id || (prev ? prev.video_id : ''),
         selection: currentWatchMeta.selection,
-        title: currentWatchMeta.title || (existingIdx !== -1 ? list[existingIdx].title : 'YouTube Video'),
-        channel: currentWatchMeta.channel || (existingIdx !== -1 ? list[existingIdx].channel : ''),
-        channel_id: currentWatchMeta.channel_id || (existingIdx !== -1 ? list[existingIdx].channel_id : ''),
-        thumbnail: currentWatchMeta.thumbnail || (existingIdx !== -1 ? list[existingIdx].thumbnail : ''),
-        duration: dur || (existingIdx !== -1 ? list[existingIdx].duration : 0),
-        resume_sec: pos > 3 ? Math.floor(pos) : (existingIdx !== -1 ? list[existingIdx].resume_sec : 0),
+        title: currentWatchMeta.title || (prev ? prev.title : 'YouTube Video'),
+        channel: currentWatchMeta.channel || (prev ? prev.channel : ''),
+        channel_id: currentWatchMeta.channel_id || (prev ? prev.channel_id : ''),
+        thumbnail: currentWatchMeta.thumbnail || (prev ? prev.thumbnail : ''),
+        duration: dur || (prev ? prev.duration : 0),
+        resume_sec: pos > 3 ? Math.floor(pos) : (prev ? prev.resume_sec : 0),
         watched_at: Date.now(),
     };
 
@@ -452,7 +455,6 @@ function scheduleMediaRecovery(reason, forceNewSession = false) {
     }
 
     const delayMs = Math.min(5000, 1000 + (mediaRetryCount - 1) * 750);
-    console.warn(`[Auto-Recovery] ${reason} — Versuch ${mediaRetryCount}/${MEDIA_MAX_RETRIES} in ${delayMs}ms ab Sekunde ${resumeSec.toFixed(1)}`);
     setStatus(`RECONNECTING (${mediaRetryCount}/${MEDIA_MAX_RETRIES})…`, 'resolving');
     if (statusPerf) {
         statusPerf.textContent = `Verbindung wird wiederhergestellt (${reason})…`;
@@ -498,7 +500,9 @@ function loadSearchState() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         return raw ? JSON.parse(raw) : null;
-    } catch (_) { return null; }
+    } catch (_) {
+        return null;
+    }
 }
 
 function updateFilterUI() {
@@ -524,9 +528,8 @@ function updateFilterUI() {
         } else if (channelAvatar) {
             channelAvatar.classList.add('hidden');
         }
-        if (document.getElementById('results-title')) {
-            document.getElementById('results-title').textContent = `Videos von ${activeChannel.title}`;
-        }
+        const rt = document.getElementById('results-title');
+        if (rt) rt.textContent = `Videos von ${activeChannel.title}`;
     } else {
         if (channelBanner) channelBanner.classList.add('hidden');
         const titleEl = document.getElementById('results-title');
@@ -552,7 +555,6 @@ function navigateToWatch(item, forceResumeSec = null) {
         : (item.resume_sec || (hist ? hist.resume_sec : 0) || 0);
     const dur = parseDurationSeconds(item.duration) || (hist ? hist.duration : 0) || 0;
 
-    // Aktuelle Video-Metadaten für den Verlauf zwischenspeichern
     try {
         localStorage.setItem(CURRENT_META_KEY, JSON.stringify({
             video_id: item.video_id || '',
@@ -595,7 +597,6 @@ function createVideoCard(item) {
     mark.textContent = '▶';
     wrap.append(mark);
 
-    // Dauer-Badge auf dem Thumbnail
     if (durSec > 0) {
         const durBadge = document.createElement('span');
         durBadge.className = 'thumb-duration';
@@ -603,7 +604,6 @@ function createVideoCard(item) {
         wrap.append(durBadge);
     }
 
-    // Später ansehen Button (＋ / ✓)
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
     const initiallySaved = isVideoSaved(item);
@@ -621,7 +621,6 @@ function createVideoCard(item) {
     });
     wrap.append(saveBtn);
 
-    // Roter Fortschrittsbalken unten im Thumbnail (falls schon angeschaut)
     if (resumeSec > 3) {
         const track = document.createElement('div');
         track.className = 'thumb-progress-track';
@@ -758,9 +757,8 @@ function renderLocalCollectionView(viewType) {
 
     const list = viewType === 'history' ? getWatchHistory() : getSavedVideos();
     if (searchResults) searchResults.replaceChildren();
-    if (document.getElementById('results-count')) {
-        document.getElementById('results-count').textContent = `${list.length} VIDEOS`;
-    }
+    const rc = document.getElementById('results-count');
+    if (rc) rc.textContent = `${list.length} VIDEOS`;
 
     if (list.length === 0) {
         if (searchMessage) {
@@ -801,12 +799,13 @@ async function runSearch({ append = false, overrideQuery = '' } = {}) {
             searchMessage.className = 'message loading';
             searchMessage.textContent = activeChannel ? 'Kanalvideos werden geladen …' : 'Videos werden geladen …';
         }
-        if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'LÄDT…';
+        const rc = document.getElementById('results-count');
+        if (rc) rc.textContent = 'LÄDT…';
         updateFilterUI();
         renderContinueWatchingShelf();
         saveSearchState();
-    } else {
-        if (scrollLoader) scrollLoader.classList.remove('hidden');
+    } else if (scrollLoader) {
+        scrollLoader.classList.remove('hidden');
     }
 
     try {
@@ -838,9 +837,8 @@ async function runSearch({ append = false, overrideQuery = '' } = {}) {
         nextPageToken = data.next_page_token || data.nextPageToken || '';
         totalLoaded += items.length;
 
-        if (document.getElementById('results-count')) {
-            document.getElementById('results-count').textContent = String(totalLoaded).padStart(2, '0') + ' TREFFER';
-        }
+        const rc = document.getElementById('results-count');
+        if (rc) rc.textContent = String(totalLoaded).padStart(2, '0') + ' TREFFER';
         if (searchMessage) searchMessage.className = 'message';
 
         if (!append && !items.length) {
@@ -864,7 +862,8 @@ async function runSearch({ append = false, overrideQuery = '' } = {}) {
         if (id === searchRequestNo && searchMessage) {
             searchMessage.className = 'message';
             searchMessage.textContent = err.message || 'Die Suche ist fehlgeschlagen.';
-            if (document.getElementById('results-count')) document.getElementById('results-count').textContent = 'FEHLER';
+            const rc = document.getElementById('results-count');
+            if (rc) rc.textContent = 'FEHLER';
         }
     } finally {
         if (id === searchRequestNo) {
@@ -967,9 +966,8 @@ if (location.pathname !== '/watch') {
             const catQuery = chip.dataset.categoryQuery || '';
             if (queryInput) queryInput.value = '';
             if (btnClearQuery) btnClearQuery.classList.add('hidden');
-            if (document.getElementById('results-title')) {
-                document.getElementById('results-title').textContent = chip.textContent;
-            }
+            const rt = document.getElementById('results-title');
+            if (rt) rt.textContent = chip.textContent;
             void runSearch({ append: false, overrideQuery: catQuery });
         });
     });
@@ -1010,7 +1008,6 @@ if (location.pathname !== '/watch') {
         });
     }
 
-    // Infinite Scroll Observer
     if (scrollSentinel && 'IntersectionObserver' in window) {
         const obs = new IntersectionObserver((entries) => {
             for (const entry of entries) {
@@ -1024,7 +1021,6 @@ if (location.pathname !== '/watch') {
         obs.observe(scrollSentinel);
     }
 
-    // Beim Starten der Startseite automatisch "Weiterschauen" + Start-Feed laden
     window.addEventListener('DOMContentLoaded', () => {
         renderContinueWatchingShelf();
         const saved = loadSearchState();
@@ -1056,7 +1052,6 @@ function updatePlaybackControlsUI(currentSec) {
         btnPause.setAttribute('aria-label', isPlaybackPaused ? 'Fortsetzen' : 'Pause');
     }
 
-    // Periodisch alle 2.5 Sekunden den Fortschritt für den Verlauf speichern
     const now = performance.now();
     if (currentSec > 3 && now - lastHistorySaveAt > 2500) {
         lastHistorySaveAt = now;
@@ -1217,7 +1212,6 @@ presetBtns.forEach(btn => {
         if (appState === 'playing' || appState === 'resolving' || appState === 'error') {
             clearRecoveryTimers();
             mediaRetryCount = 0;
-            // Exakte aktuelle Wiedergabesekunde vor dem Umschalten sichern!
             const resumeSec = getCurrentPlaybackSecond();
             seekBaseSeconds = resumeSec;
             lastKnownPosition = resumeSec;
@@ -1473,8 +1467,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
 
                 src.start(nextAudioTime, skipOffsetSec, playDurationSec);
                 nextAudioTime += playDurationSec;
-            } catch (decodeErr) {
-                console.warn('MP3-Chunk übersprungen:', decodeErr);
+            } catch (_) {
                 prevTailBytes = null;
                 prevTailFrames = 0;
             }
@@ -1491,8 +1484,7 @@ async function startHiddenWebAudio(sid, startSec = 0) {
                 }, 1200);
             }
         }
-    } catch (e) {
-        console.warn('WebAudio Stream unterbrochen, starte Reconnect:', e);
+    } catch (_) {
         if (customAudioReader === reader && appState === 'playing' && sessionId === sid) {
             audioRetryTimer = setTimeout(() => {
                 audioRetryTimer = null;
@@ -2081,7 +2073,6 @@ async function doPlay(resumeAtSec = 0, directSelection = null, isRecovery = fals
     setUiState('playing');
     updateTitle(data.title, data.is_live);
 
-    // Verlauf-Metadaten aktualisieren
     let storedMeta = null;
     try {
         const rawMeta = localStorage.getItem(CURRENT_META_KEY);
@@ -2422,4 +2413,104 @@ function connectWs(sid, startSec = 0) {
             return;
         }
         wsRetryCount++;
-        if (wsRetryCount > WS_MAX_
+        if (wsRetryCount > WS_MAX_RETRIES) {
+            setError(`Stream disconnected — reconnect failed after ${WS_MAX_RETRIES} attempts`);
+            finishPlayback();
+            return;
+        }
+        const delay = wsRetryCount * 1000;
+        setStatus(`RECONNECTING (${wsRetryCount}/${WS_MAX_RETRIES})…`, 'resolving');
+        wsRetryTimer = setTimeout(() => {
+            wsRetryTimer = null;
+            if (appState === 'playing' && sessionId === sid) connectWs(sid, getCurrentPlaybackSecond());
+        }, delay);
+    };
+
+    ws.onerror = () => {};
+}
+
+const flushSelectionLayer = () => {
+    if (!selectionBuffer || appState !== 'playing' || renderMode === 1) return;
+    if (asciiPlayer) asciiPlayer.textContent = textDecoder.decode(selectionBuffer);
+};
+if (asciiPlayer) asciiPlayer.addEventListener('selectstart', flushSelectionLayer);
+document.addEventListener('copy', flushSelectionLayer);
+
+if (btnPlay) btnPlay.addEventListener('click', () => { void doPlay(0); });
+if (btnStop) btnStop.addEventListener('click', doStop);
+
+window.addEventListener('resize', () => {
+    if (canvasVideoMode && (appState === 'playing' || appState === 'resolving')) layoutVideoCanvas();
+    else if (gridCols > 0 && appState === 'playing') buildCanvas(gridCols, gridRows);
+});
+
+if (canvas) {
+    canvas.addEventListener('click', () => {
+        if (document.body.classList.contains('ui-idle')) {
+            wakeUpUiChrome();
+            return;
+        }
+        if (appState === 'error' && canvasVideoMode) {
+            mediaRetryCount = 0;
+            appState = 'playing';
+            void doPlay(getCurrentPlaybackSecond(), null, true);
+            return;
+        }
+        if (appState === 'playing' && canvasVideoMode) {
+            if (audioContext && audioContext.state === 'suspended' && !isPlaybackPaused) {
+                audioContext.resume().catch(() => {});
+                if (statusPerf) statusPerf.classList.add('hidden');
+                wakeUpUiChrome();
+                return;
+            }
+            void toggleCustomPause();
+        }
+    });
+}
+
+window.addEventListener('online', () => {
+    if ((appState === 'playing' || appState === 'error') && canvasVideoMode) {
+        mediaRetryCount = 0;
+        if (mediaRetryTimer !== null) {
+            clearTimeout(mediaRetryTimer);
+            mediaRetryTimer = null;
+        }
+        appState = 'playing';
+        scheduleMediaRecovery('Netzwerk wieder da', false);
+    }
+});
+
+window.addEventListener('pagehide', () => {
+    if (location.pathname === '/watch') {
+        recordWatchProgress(getCurrentPlaybackSecond(), mediaDurationSec);
+    }
+});
+
+// Split-page mode: /watch startet automatisch das ausgewählte Video (auch ab gespeicherter Sekunde!)
+if (location.pathname === '/watch') {
+    document.body.classList.add('watch-page');
+    const params = new URLSearchParams(location.search);
+    const selection = params.get('selection');
+    const startParam = Math.max(0, Number(params.get('start')) || 0);
+
+    if (btnPlay) btnPlay.classList.add('hidden');
+    const qs = document.getElementById('btn-search');
+    if (qs) qs.classList.add('hidden');
+    if (queryInput) {
+        queryInput.value = '';
+        queryInput.classList.add('hidden');
+    }
+
+    if (btnStop) {
+        btnStop.classList.remove('hidden');
+        btnStop.addEventListener('click', () => {
+            recordWatchProgress(getCurrentPlaybackSecond(), mediaDurationSec);
+            location.href = '/';
+        });
+    }
+    if (selection) {
+        window.setTimeout(() => { void doPlay(startParam, selection, false); }, 50);
+    } else {
+        setLoadingProgress(0, 'Keine Auswahl', 'Bitte kehre zur Mediathek zurück und wähle ein Video.');
+    }
+}
