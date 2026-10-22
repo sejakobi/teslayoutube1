@@ -571,3 +571,51 @@
   .watch-page .floating-time-pill { bottom: 50px !important; padding: 8px 14px !important; gap: 8px !important; }
   .watch-page .status-fps { display: none !important; }
 }
+
+/* Erzwingt das Ausblenden des Ladebildschirms */
+.watch-page #idle-overlay.hidden {
+  display: none !important;
+}
+
+/* Visueller Fortschrittsbalken mit aktivem Füllstand & Touch-Regler */
+.watch-page #playback-progress {
+  --progress-pct: 0%;
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  flex: 1 1 auto !important;
+  height: 8px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(
+    90deg,
+    #e44a4f 0%,
+    #ff7b7f var(--progress-pct),
+    rgba(255, 255, 255, 0.16) var(--progress-pct),
+    rgba(255, 255, 255, 0.16) 100%
+  ) !important;
+  outline: none !important;
+  cursor: pointer !important;
+  touch-action: none !important;
+}
+
+.watch-page #playback-progress::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 20px !important;
+  height: 20px !important;
+  border-radius: 50% !important;
+  background: #ffffff !important;
+  border: 2px solid #e44a4f !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6) !important;
+  cursor: pointer !important;
+  transition: transform 0.15s ease !important;
+}
+
+.watch-page #playback-progress:hover::-webkit-slider-thumb,
+.watch-page #playback-progress:active::-webkit-slider-thumb {
+  transform: scale(1.2) !important;
+}
+
+.watch-page #playback-progress:disabled {
+  opacity: 0.45 !important;
+  cursor: default !important;
+}
